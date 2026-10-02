@@ -10,7 +10,7 @@
  *   node journey.mjs            exits 0 when every step passed
  */
 import { spawn, spawnSync, execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { platform, tmpdir } from "node:os";
 import { join } from "node:path";
@@ -178,13 +178,22 @@ await step("a repo whose committed .mcp.json says `pantheon mcp` still gets Pant
   // Windows: a host cannot spawn pantheon.cmd without a shell, so Claude Code needs
   // its per-folder override, which outranks the committed file.
   if (!hasClaude) return "no Claude Code installed: nothing to check";
+  // The temp folder may be spelled short (C:\\Users\\RUNNER~1\\…) or long: Claude Code keys the
+  // override by its own spelling, so both are looked for — and Claude Code itself is asked below.
+  const norm = (p) => p.replace(/\\/g, "/").toLowerCase();
+  const spellings = new Set([norm(repo), norm(realpathSync.native(repo))]);
   const cj = JSON.parse(readFileSync(join(joiner.home, ".claude.json"), "utf8"));
-  const proj = Object.entries(cj.projects ?? {}).find(([p]) => p.replace(/\\/g, "/").toLowerCase() === repo.replace(/\\/g, "/").toLowerCase())?.[1];
+  const proj = Object.entries(cj.projects ?? {}).find(([p]) => spellings.has(norm(p)))?.[1];
   const e = proj?.mcpServers?.pantheon;
-  if (!e?.command) throw new Error(`no per-folder override for ${repo}: Claude Code would try the committed \`pantheon mcp\`, which Windows cannot start. use printed:\n${u.out.slice(-300)}`);
+  if (!e?.command) throw new Error(`no per-folder override for ${repo} (${[...spellings].join(" or ")}); keys: ${Object.keys(cj.projects ?? {}).join(", ")}. use printed:\n${u.out.slice(-300)}`);
+  // What Claude Code itself would start in this folder, asked from inside it, as the person's shell would be.
+  const got = spawnSync("claude.cmd", ["mcp", "get", "pantheon"], { cwd: repo, env: joiner.env, encoding: "utf8", shell: true, timeout: 60_000 });
+  const said = `${got.stdout ?? ""}${got.stderr ?? ""}`;
+  const cmdLine = /Command:\s*(.+)/i.exec(said)?.[1]?.trim() ?? "";
+  if (!/scope:\s*local/i.test(said) || /^pantheon(\.cmd)?$/i.test(cmdLine)) throw new Error(`Claude Code in this folder would not start the override:\n${said.slice(-400)}`);
   const a = await handshake(e.command, e.args ?? [], joiner.env, repo);
   if (!a.ok) throw new Error(`the override does not start: ${a.why}`);
-  return `override starts (${a.tools} tools)`;
+  return `override starts (${a.tools} tools); Claude Code here: local scope, ${cmdLine.slice(0, 60)}`;
 });
 
 await step("the wake-up hook is a command that actually runs", () => {
