@@ -186,14 +186,22 @@ await step("a repo whose committed .mcp.json says `pantheon mcp` still gets Pant
   const proj = Object.entries(cj.projects ?? {}).find(([p]) => spellings.has(norm(p)))?.[1];
   const e = proj?.mcpServers?.pantheon;
   if (!e?.command) throw new Error(`no per-folder override for ${repo} (${[...spellings].join(" or ")}); keys: ${Object.keys(cj.projects ?? {}).join(", ")}. use printed:\n${u.out.slice(-300)}`);
-  // What Claude Code itself would start in this folder, asked from inside it, as the person's shell would be.
-  const got = spawnSync("claude.cmd", ["mcp", "get", "pantheon"], { cwd: repo, env: joiner.env, encoding: "utf8", shell: true, timeout: 60_000 });
-  const said = `${got.stdout ?? ""}${got.stderr ?? ""}`;
-  const cmdLine = /Command:\s*(.+)/i.exec(said)?.[1]?.trim() ?? "";
-  if (!/scope:\s*local/i.test(said) || /^pantheon(\.cmd)?$/i.test(cmdLine)) throw new Error(`Claude Code in this folder would not start the override:\n${said.slice(-400)}`);
+  // What Claude Code itself would start in this folder, asked from inside it. From the folder's own
+  // (long) path — where an editor, Explorer or a terminal lands — it must be the override. From the
+  // 8.3 short spelling a temp folder can have, Claude keys projects differently; there it must at
+  // least start a working pantheon (the user entry), never the committed bare `pantheon`.
+  const ask = (cwd) => {
+    const got = spawnSync("claude.cmd", ["mcp", "get", "pantheon"], { cwd, env: joiner.env, encoding: "utf8", shell: true, timeout: 60_000 });
+    const said = `${got.stdout ?? ""}${got.stderr ?? ""}`;
+    return { said, cmd: /Command:\s*(.+)/i.exec(said)?.[1]?.trim() ?? "", local: /scope:\s*local/i.test(said), connected: /Status:.*Connected/i.test(said) };
+  };
+  const long = ask(realpathSync.native(repo));
+  if (!long.local || /^pantheon(\.cmd)?$/i.test(long.cmd)) throw new Error(`Claude Code in ${realpathSync.native(repo)} would not start the override:\n${long.said.slice(-400)}`);
+  const short = ask(repo);
+  if (/^pantheon(\.cmd)?$/i.test(short.cmd) || !short.connected) throw new Error(`Claude Code in ${repo} would not start a working pantheon:\n${short.said.slice(-400)}`);
   const a = await handshake(e.command, e.args ?? [], joiner.env, repo);
   if (!a.ok) throw new Error(`the override does not start: ${a.why}`);
-  return `override starts (${a.tools} tools); Claude Code here: local scope, ${cmdLine.slice(0, 60)}`;
+  return `override starts (${a.tools} tools); Claude Code in the folder: local scope${short.local ? "" : "; from its short path: the user entry, connected"}`;
 });
 
 await step("the wake-up hook is a command that actually runs", () => {
