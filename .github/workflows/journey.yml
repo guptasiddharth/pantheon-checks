@@ -1,0 +1,37 @@
+name: journey
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "npm version or tag of @join-pantheon/cli to check (latest, next, or e.g. 0.31.2-rc.1)"
+        default: latest
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  journey:
+    name: ${{ matrix.os }} · node ${{ matrix.node }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest, ubuntu-latest]
+        node: ["22", "24"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+      - name: install @join-pantheon/cli@${{ inputs.version }}
+        run: npm i -g @join-pantheon/cli@${{ inputs.version }}
+      - name: install Claude Code (so wiring, hooks and the committed-repo case use a real agent CLI)
+        run: npm i -g @anthropic-ai/claude-code
+        continue-on-error: true
+      - name: journey
+        run: node journey.mjs
+        env:
+          PANTHEON_VERSION: ${{ inputs.version }}
