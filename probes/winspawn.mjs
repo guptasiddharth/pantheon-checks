@@ -16,8 +16,10 @@ const variants = {
 for (const [name, v] of Object.entries(variants)) {
   const marker = join(dir, `${name}.txt`), log = join(dir, `${name}.log`);
   const parent = join(dir, `${name}.mjs`);
+  // Every path goes in through JSON.stringify: a Windows path's backslashes are escapes in JS source.
   writeFileSync(parent, `import { spawn } from "node:child_process";
-const c = spawn(${JSON.stringify(ps)}, [...${JSON.stringify(v.args)}, "-Command", "& { Wait-Process -Id " + process.pid + " -Timeout 60 -ErrorAction SilentlyContinue; Set-Content -LiteralPath '${marker}' 'ran' } *> '${log}'"], { ...${JSON.stringify(v.opts)}, stdio: "ignore" });
+const marker = ${JSON.stringify(marker)}, log = ${JSON.stringify(log)};
+const c = spawn(${JSON.stringify(ps)}, [...${JSON.stringify(v.args)}, "-Command", "& { Wait-Process -Id " + process.pid + " -Timeout 60 -ErrorAction SilentlyContinue; Set-Content -LiteralPath '" + marker + "' 'ran' } *> '" + log + "'"], { ...${JSON.stringify(v.opts)}, stdio: "ignore" });
 c.on("error", (e) => console.error("spawn error", e.message));
 c.unref();
 `);
