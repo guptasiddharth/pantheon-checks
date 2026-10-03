@@ -1,7 +1,12 @@
 name: probe
 
 on:
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      probe:
+        description: "which probes/<name>.mjs to run"
+        default: "winspawn"
+        required: false
 
 permissions:
   contents: read
@@ -20,4 +25,4 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
-      - run: node probes/winspawn.mjs
+      - run: node probes/${{ inputs.probe || 'winspawn' }}.mjs
