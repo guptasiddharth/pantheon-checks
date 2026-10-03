@@ -1,0 +1,35 @@
+name: installer
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "npm version of @join-pantheon/cli whose relay serves the installer (e.g. 0.32.0-rc.1)"
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  installer:
+    name: ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        # Apple silicon and Intel Macs, x64 and arm64 Linux, x64 and arm64 Windows.
+        os: [macos-15, macos-13, ubuntu-24.04, ubuntu-24.04-arm, windows-2022, windows-11-arm]
+    steps:
+      - uses: actions/checkout@v4
+      # Node here is the FOUNDER's (npm install + the relay) and the harness's own.
+      # The person installing with the one line gets a PATH with no node at all.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: the founder installs @join-pantheon/cli@${{ inputs.version }} with npm
+        run: npm i -g @join-pantheon/cli@${{ inputs.version }}
+      - name: installer
+        run: node installer.mjs
+        env:
+          PANTHEON_VERSION: ${{ inputs.version }}
