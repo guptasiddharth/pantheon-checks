@@ -187,6 +187,9 @@ await step("a message crosses: the joiner says hello, the founder reads it", asy
 
 await step("the MCP entry it writes starts the way an agent starts it", async () => {
   const repo = join(jroot, "repo"); mkdirSync(repo, { recursive: true });
+  // A runner has no coding agent; Cursor's config folder is what Pantheon takes as "Cursor
+  // is here", so its user entry is written and can be started the way Cursor starts it.
+  mkdirSync(join(jhome, ".cursor"), { recursive: true });
   const u = joiner(["install", "--user"]);
   const files = [join(jhome, ".cursor", "mcp.json"), join(jhome, ".claude.json")];
   const r = joiner(["install"], repo);
