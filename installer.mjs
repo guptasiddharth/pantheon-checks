@@ -251,10 +251,11 @@ await step("pantheon uninstall removes what the installer added, and nothing els
   if (r.code !== 0) throw new Error(r.out.slice(-500));
   const runtime = WIN ? join(localAppData, "Pantheon", "runtime") : join(jhome, ".pantheon", "runtime");
   // Windows: the runtime is locked while uninstall runs from it, and goes a few seconds after it exits.
-  for (let i = 0; i < (WIN ? 40 : 1) && existsSync(runtime); i++) await new Promise((res) => setTimeout(res, 500));
+  for (let i = 0; i < (WIN ? 60 : 1) && existsSync(runtime); i++) await new Promise((res) => setTimeout(res, 500));
   if (existsSync(runtime)) {
     const holding = WIN ? spawnSync("powershell", ["-NoProfile", "-Command", `Get-Process | Where-Object { $_.Path -and $_.Path.StartsWith('${runtime}', 'OrdinalIgnoreCase') } | ForEach-Object { "$($_.Id) $($_.Path)" }`], { encoding: "utf8" }).stdout : "";
-    throw new Error(`${runtime} is still there${holding ? `; still running from it: ${holding.trim()}` : ""}\n${r.out.slice(-400)}`);
+    let log = ""; try { log = readFileSync(join(process.env.TEMP ?? "", "pantheon-uninstall.log"), "utf8"); } catch { log = "(no pantheon-uninstall.log: the cleanup never ran)"; }
+    throw new Error(`${runtime} is still there${holding ? `; still running from it: ${holding.trim()}` : ""}\ncleanup log: ${log.slice(-600) || "(empty)"}\n${r.out.slice(-300)}`);
   }
   if (closed) return `closed first (an agent window would be): ${closed.split(/\r?\n/).length} process(es)`;
   if (!WIN) for (const f of [".profile", ".bashrc", ".zshrc"]) { try { if (readFileSync(join(jhome, f), "utf8").includes(">>> pantheon >>>")) throw new Error(`${f} still has the PATH block`); } catch (e) { if (e.code !== "ENOENT") throw e; } }
