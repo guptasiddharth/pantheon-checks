@@ -16,7 +16,7 @@
 import { spawn, spawnSync } from "node:child_process";
 import { pathToFileURL } from "node:url";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { delimiter, join } from "node:path";
 import { platform, tmpdir } from "node:os";
@@ -334,12 +334,26 @@ if (prev && want && !["latest", "next"].includes(want)) {
       j = JSON.parse(res);
       if (!j.ok) throw new Error(`upgrade failed: ${JSON.stringify(j.steps).slice(0, 600)}`);
     } finally { mcp.kill(); }
-    if (!existsSync(`${pkg}.prev`)) throw new Error(`no ${pkg}.prev: the upgrade did not go through the swap (${JSON.stringify(j.steps).slice(0, 300)})`);
+    if (!existsSync(join(rt, "cli.prev"))) throw new Error(`no ${join(rt, "cli.prev")}: the upgrade did not go through the swap (${JSON.stringify(j.steps).slice(0, 300)})`);
     if (readdirSync(rt).some((n) => n.startsWith(".upgrade-"))) throw new Error("a staging folder was left behind");
     const v = versionOf(); if (v !== want) throw new Error(`after the swap it answers ${v}`);
     const a = await handshake(node, ["--use-system-ca", join(pkg, "dist", "cli.js"), "mcp"], uenv, uroot);
     if (!a.ok) throw new Error(`the MCP server does not start after the swap: ${a.why}`);
     return `swapped, previous kept, MCP ${a.tools} tools`;
+  });
+
+  await step("an upgrade cut off between its two renames: the pantheon command puts the CLI back and runs", async () => {
+    const ulauncher = WIN ? join(localAppData, "Pantheon", "bin", "pantheon.cmd") : join(uhome, ".pantheon", "bin", "pantheon");
+    const prevDir = join(rt, "cli.prev");
+    rmSync(prevDir, { recursive: true, force: true });
+    renameSync(pkg, prevDir);
+    const r = WIN
+      ? spawnSync("cmd.exe", ["/d", "/s", "/c", `"${ulauncher}" --version`], { encoding: "utf8", env: uenv, windowsVerbatimArguments: true })
+      : spawnSync(ulauncher, ["--version"], { encoding: "utf8", env: uenv });
+    const said = strip(`${r.stdout}${r.stderr}`);
+    if (!existsSync(join(pkg, "bin", "pantheon.js"))) throw new Error(`the CLI was not put back (launcher said: ${said.slice(0, 300)})`);
+    if (!said.includes(want)) throw new Error(`the launcher did not run ${want} after putting it back: ${said.slice(0, 300)}`);
+    return "put back, and it ran";
   });
 }
 
