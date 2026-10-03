@@ -240,12 +240,23 @@ if (WIN) {
 await step("pantheon uninstall removes what the installer added, and nothing else", async () => {
   const help = joiner(["help"]);
   if (!/\buninstall\b/.test(help.out)) return "not in this version: skipped";
+  // A person closes their agent windows first; here, any pantheon still running from the
+  // runtime (an MCP server an earlier step started) is stopped and named.
+  let closed = "";
+  if (WIN) {
+    const ps = spawnSync("powershell", ["-NoProfile", "-Command", `Get-Process | Where-Object { $_.Path -and $_.Path.StartsWith('${join(localAppData, "Pantheon", "runtime")}', 'OrdinalIgnoreCase') } | ForEach-Object { "$($_.Id) $($_.Path)"; Stop-Process -Id $_.Id -Force }`], { encoding: "utf8" });
+    closed = (ps.stdout ?? "").trim();
+  }
   const r = joiner(["uninstall", "--yes"]);
   if (r.code !== 0) throw new Error(r.out.slice(-500));
   const runtime = WIN ? join(localAppData, "Pantheon", "runtime") : join(jhome, ".pantheon", "runtime");
   // Windows: the runtime is locked while uninstall runs from it, and goes a few seconds after it exits.
   for (let i = 0; i < (WIN ? 40 : 1) && existsSync(runtime); i++) await new Promise((res) => setTimeout(res, 500));
-  if (existsSync(runtime)) throw new Error(`${runtime} is still there:\n${r.out.slice(-400)}`);
+  if (existsSync(runtime)) {
+    const holding = WIN ? spawnSync("powershell", ["-NoProfile", "-Command", `Get-Process | Where-Object { $_.Path -and $_.Path.StartsWith('${runtime}', 'OrdinalIgnoreCase') } | ForEach-Object { "$($_.Id) $($_.Path)" }`], { encoding: "utf8" }).stdout : "";
+    throw new Error(`${runtime} is still there${holding ? `; still running from it: ${holding.trim()}` : ""}\n${r.out.slice(-400)}`);
+  }
+  if (closed) return `closed first (an agent window would be): ${closed.split(/\r?\n/).length} process(es)`;
   if (!WIN) for (const f of [".profile", ".bashrc", ".zshrc"]) { try { if (readFileSync(join(jhome, f), "utf8").includes(">>> pantheon >>>")) throw new Error(`${f} still has the PATH block`); } catch (e) { if (e.code !== "ENOENT") throw e; } }
   return "";
 });
