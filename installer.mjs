@@ -348,7 +348,7 @@ if (prev && want && !["latest", "next"].includes(want)) {
     rmSync(prevDir, { recursive: true, force: true });
     renameSync(pkg, prevDir);
     const r = WIN
-      ? spawnSync("cmd.exe", ["/d", "/s", "/c", `"${ulauncher}" --version`], { encoding: "utf8", env: uenv, windowsVerbatimArguments: true })
+      ? spawnSync("cmd.exe", ["/d", "/s", "/c", `""${ulauncher}" --version"`], { encoding: "utf8", env: uenv, windowsVerbatimArguments: true })
       : spawnSync(ulauncher, ["--version"], { encoding: "utf8", env: uenv });
     const said = strip(`${r.stdout}${r.stderr}`);
     if (!existsSync(join(pkg, "bin", "pantheon.js"))) throw new Error(`the CLI was not put back (launcher said: ${said.slice(0, 300)})`);

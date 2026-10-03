@@ -22,7 +22,7 @@ for (const name of ["plain", "with space", "A&B (x)", "100% done", "Ünï ŝ"]) 
   copyFileSync(process.execPath, join(nodeDir, "node.exe"));
   const writeCli = (dir, label) => { mkdirSync(join(dir, "bin"), { recursive: true }); writeFileSync(join(dir, "bin", "pantheon.js"), `console.log(${JSON.stringify(label)} + " " + process.argv.slice(2).join(" ")); process.exit(0);`); };
   const launcher = join(bin, "pantheon.cmd"); writeFileSync(launcher, cmdText, "ascii");
-  const run = () => { const r = spawnSync("cmd.exe", ["/d", "/s", "/c", `"${launcher}" --version x`], { encoding: "utf8", windowsVerbatimArguments: true }); return { code: r.status, out: `${r.stdout}${r.stderr}`.trim() }; };
+  const run = () => { const r = spawnSync("cmd.exe", ["/d", "/s", "/c", `""${launcher}" --version x"`], { encoding: "utf8", windowsVerbatimArguments: true }); return { code: r.status, out: `${r.stdout}${r.stderr}`.trim() }; };
 
   writeCli(prev, "previous");
   let r = run();
