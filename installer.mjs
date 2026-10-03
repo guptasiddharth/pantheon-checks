@@ -237,13 +237,15 @@ if (WIN) {
   });
 }
 
-await step("pantheon uninstall removes what the installer added, and nothing else", () => {
+await step("pantheon uninstall removes what the installer added, and nothing else", async () => {
   const help = joiner(["help"]);
   if (!/\buninstall\b/.test(help.out)) return "not in this version: skipped";
   const r = joiner(["uninstall", "--yes"]);
   if (r.code !== 0) throw new Error(r.out.slice(-500));
   const runtime = WIN ? join(localAppData, "Pantheon", "runtime") : join(jhome, ".pantheon", "runtime");
-  if (existsSync(runtime)) throw new Error(`${runtime} is still there`);
+  // Windows: the runtime is locked while uninstall runs from it, and goes a few seconds after it exits.
+  for (let i = 0; i < (WIN ? 40 : 1) && existsSync(runtime); i++) await new Promise((res) => setTimeout(res, 500));
+  if (existsSync(runtime)) throw new Error(`${runtime} is still there:\n${r.out.slice(-400)}`);
   if (!WIN) for (const f of [".profile", ".bashrc", ".zshrc"]) { try { if (readFileSync(join(jhome, f), "utf8").includes(">>> pantheon >>>")) throw new Error(`${f} still has the PATH block`); } catch (e) { if (e.code !== "ENOENT") throw e; } }
   return "";
 });
