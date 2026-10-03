@@ -6,6 +6,10 @@ on:
       version:
         description: "npm version of @join-pantheon/cli whose relay serves the installer (e.g. 0.32.0-rc.1)"
         required: true
+      prev:
+        description: "an earlier release with the managed install (0.32.1+): installed first, then upgraded the way its worker would"
+        default: "0.32.1"
+        required: false
 
 permissions:
   contents: read
@@ -33,3 +37,4 @@ jobs:
         run: node installer.mjs
         env:
           PANTHEON_VERSION: ${{ inputs.version }}
+          PANTHEON_PREV_VERSION: ${{ inputs.prev }}

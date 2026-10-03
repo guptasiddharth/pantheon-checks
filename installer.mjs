@@ -14,6 +14,7 @@
  * which a CI runner throws away.
  */
 import { spawn, spawnSync } from "node:child_process";
+import { pathToFileURL } from "node:url";
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
@@ -261,6 +262,86 @@ await step("pantheon uninstall removes what the installer added, and nothing els
   if (!WIN) for (const f of [".profile", ".bashrc", ".zshrc"]) { try { if (readFileSync(join(jhome, f), "utf8").includes(">>> pantheon >>>")) throw new Error(`${f} still has the PATH block`); } catch (e) { if (e.code !== "ENOENT") throw e; } }
   return "";
 });
+
+/* ---- upgrades: the transition every one-line install makes, then the new release's own path ---- */
+// PANTHEON_PREV_VERSION: a release installed with the one line first (0.32.1). Its
+// own upgrade code is what every machine on it will run when a release ships.
+const prev = process.env.PANTHEON_PREV_VERSION ?? "";
+if (prev && want && !["latest", "next"].includes(want)) {
+  const uroot = mkdtempSync(join(tmpdir(), "pi-upgrader-"));
+  const uhome = join(uroot, "home"); mkdirSync(uhome, { recursive: true });
+  const uenv = { ...process.env, HOME: uhome, USERPROFILE: uhome, PANTHEON_HOME: join(uroot, "pantheon"), PATH: nodelessPath() };
+  if (WIN) uenv.Path = uenv.PATH;
+  const rt = WIN ? join(localAppData, "Pantheon", "runtime") : join(uhome, ".pantheon", "runtime");
+  const node = WIN ? join(rt, "node", "node.exe") : join(rt, "node", "bin", "node");
+  const pkg = WIN ? join(rt, "node", "node_modules", "@join-pantheon", "cli") : join(rt, "node", "lib", "node_modules", "@join-pantheon", "cli");
+  const versionOf = () => { const r = spawnSync(node, ["--use-system-ca", join(pkg, "bin", "pantheon.js"), "--version"], { encoding: "utf8", env: uenv }); return /\d+\.\d+\.\d+(-[\w.]+)?/.exec(strip(r.stdout))?.[0] ?? `(no answer: ${strip(r.stderr).slice(0, 200)})`; };
+  /** an MCP server running from the install, as an open agent window keeps one */
+  const holdMcp = () => spawn(node, ["--use-system-ca", join(pkg, "dist", "cli.js"), "mcp"], { env: uenv, stdio: ["pipe", "ignore", "ignore"] });
+  /** exactly what a worker runs to self-upgrade: that release's own upgrade(), toward the relay's version */
+  const workerUpgrade = (to) => spawnSync(node, ["--use-system-ca", "-e",
+    `import(${JSON.stringify(pathToFileURL(join(pkg, "dist", "upgrade.js")).href)}).then((m) => { const r = m.upgrade(undefined, { version: ${JSON.stringify(to)} }); console.log("RESULT " + JSON.stringify({ ok: r.ok, from: r.from, to: r.to, steps: r.steps })); })`],
+    { encoding: "utf8", env: uenv, timeout: 600_000 });
+
+  // Released code before 0.32.2 asks npm for a plain version only, so it cannot
+  // be pointed at a release candidate: that leg needs the final V published as
+  // `next` (RELEASING.md step 3). Said loudly, never skipped silently.
+  const prevCanReach = !want.includes("-");
+  if (!prevCanReach) console.log(`NOT RUN: ${prev} -> ${want}. ${prev} cannot upgrade to a release candidate; run this workflow again with the final version (published as next).`);
+  if (prevCanReach) await step(`the one line installs the previous release (${prev})`, async () => {
+    const r0 = await fetch(`${http}/${WIN ? "install.ps1" : "install.sh"}`);
+    let script = await r0.text();
+    script = WIN ? script.replace(/\$PantheonVersion = '[^']+'/, `$PantheonVersion = '${prev}'`) : script.replace(/^PANTHEON_VERSION="[^"]+"/m, `PANTHEON_VERSION="${prev}"`);
+    const f = join(uroot, WIN ? "install-prev.ps1" : "install-prev.sh"); writeFileSync(f, script);
+    const r = WIN
+      ? spawnSync("powershell", ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", f], { encoding: "utf8", env: uenv, timeout: 600_000 })
+      : spawnSync("sh", [f], { encoding: "utf8", env: uenv, timeout: 600_000 });
+    if (r.status !== 0) throw new Error(strip(`${r.stdout}${r.stderr}`).slice(-800));
+    const v = versionOf(); if (v !== prev) throw new Error(`installed ${v}, expected ${prev}`);
+    return v;
+  });
+
+  if (prevCanReach) await step(`${prev} self-upgrades to ${want} the way its worker does, with an agent's MCP server running`, async () => {
+    const mcp = holdMcp(); await new Promise((r) => setTimeout(r, 2000));
+    try {
+      const r = workerUpgrade(want);
+      const res = /RESULT (.*)/.exec(r.stdout ?? "")?.[1];
+      if (!res) throw new Error(`no result: ${strip(`${r.stdout}${r.stderr}`).slice(-600)}`);
+      const j = JSON.parse(res);
+      if (!j.ok) throw new Error(`upgrade failed: ${JSON.stringify(j.steps).slice(0, 600)}`);
+    } finally { mcp.kill(); }
+    const v = versionOf(); if (v !== want) throw new Error(`after the upgrade it answers ${v}, expected ${want}`);
+    const a = await handshake(node, ["--use-system-ca", join(pkg, "dist", "cli.js"), "mcp"], uenv, uroot);
+    if (!a.ok) throw new Error(`the upgraded MCP server does not start: ${a.why}`);
+    return `${prev} -> ${v}, MCP ${a.tools} tools`;
+  });
+
+  if (!prevCanReach) await step(`the one line installs ${want}`, async () => {
+    const f = join(uroot, WIN ? "install.ps1" : "install.sh"); writeFileSync(f, await (await fetch(`${http}/${WIN ? "install.ps1" : "install.sh"}`)).text());
+    const r = WIN
+      ? spawnSync("powershell", ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", f], { encoding: "utf8", env: uenv, timeout: 600_000 })
+      : spawnSync("sh", [f], { encoding: "utf8", env: uenv, timeout: 600_000 });
+    if (r.status !== 0) throw new Error(strip(`${r.stdout}${r.stderr}`).slice(-800));
+    return versionOf();
+  });
+  await step(`${want}'s own upgrade swaps safely while an MCP server runs: checked, swapped, the previous kept`, async () => {
+    const mcp = holdMcp(); await new Promise((r) => setTimeout(r, 2000));
+    let j;
+    try {
+      const r = workerUpgrade(want);
+      const res = /RESULT (.*)/.exec(r.stdout ?? "")?.[1];
+      if (!res) throw new Error(`no result: ${strip(`${r.stdout}${r.stderr}`).slice(-600)}`);
+      j = JSON.parse(res);
+      if (!j.ok) throw new Error(`upgrade failed: ${JSON.stringify(j.steps).slice(0, 600)}`);
+    } finally { mcp.kill(); }
+    if (!existsSync(`${pkg}.prev`)) throw new Error(`no ${pkg}.prev: the upgrade did not go through the swap (${JSON.stringify(j.steps).slice(0, 300)})`);
+    if (readdirSync(rt).some((n) => n.startsWith(".upgrade-"))) throw new Error("a staging folder was left behind");
+    const v = versionOf(); if (v !== want) throw new Error(`after the swap it answers ${v}`);
+    const a = await handshake(node, ["--use-system-ca", join(pkg, "dist", "cli.js"), "mcp"], uenv, uroot);
+    if (!a.ok) throw new Error(`the MCP server does not start after the swap: ${a.why}`);
+    return `swapped, previous kept, MCP ${a.tools} tools`;
+  });
+}
 
 /** Start an MCP server exactly as an agent host does — no shell — and finish initialize + tools/list. */
 function handshake(command, args, env, cwd) {
