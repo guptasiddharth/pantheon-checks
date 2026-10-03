@@ -22,7 +22,9 @@ c.on("error", (e) => console.error("spawn error", e.message));
 c.unref();
 `);
   const t0 = Date.now();
-  spawnSync("cmd.exe", ["/d", "/s", "/c", `"${process.execPath}" "${parent}"`], { stdio: "inherit", windowsVerbatimArguments: true });
+  // /s /c "<whole line>": cmd strips the outer pair, so the line keeps its own quotes.
+  const r = spawnSync("cmd.exe", ["/d", "/s", "/c", `""${process.execPath}" "${parent}""`], { stdio: "inherit", windowsVerbatimArguments: true });
+  if (r.status !== 0) console.log(`${name}: the parent itself exited ${r.status}`);
   let ok = false;
   for (let i = 0; i < 40 && !(ok = existsSync(marker)); i++) await new Promise((r) => setTimeout(r, 500));
   console.log(`${name}: ${ok ? "RAN" : "never ran"} after ${((Date.now() - t0) / 1000).toFixed(1)}s; log: ${existsSync(log) ? JSON.stringify(readFileSync(log, "utf8").slice(0, 200)) : "none"}`);
