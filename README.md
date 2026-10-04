@@ -12,5 +12,13 @@ or hosted service.
 Run it from the **Actions** tab ("journey" → Run workflow) with a version or tag:
 `latest`, `next`, or an exact version such as `0.31.2-rc.1`.
 
+`desktop.mjs` ("desktop" workflow) checks what runs in the background and on screen:
+on Windows the per-user Task Scheduler task, the hidden host with its worker,
+notifier and tray, an alert going through the tray, `pantheon://` links, `stop all`
+and `uninstall`; on Linux alerts over D-Bus with Done and Open board buttons (a
+session bus and a stand-in notification server started on the runner), `doctor`,
+and the systemd --user unit; everywhere the local board. Each check prints ok,
+FAIL or NOT RUN with the reason a runner could not do it.
+
 Pantheon's own source and full test suite live elsewhere; this repository only
 checks the package as it is published.

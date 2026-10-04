@@ -1,0 +1,59 @@
+name: desktop
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "npm version of @join-pantheon/cli to check (e.g. 0.33.0-rc.1)"
+        required: true
+      prev:
+        description: "macOS: the release whose launchd agents (notifier, menu bar) the new ones are compared with; empty compares with the expected shape only"
+        default: "0.32.1"
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  desktop:
+    name: ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        # Windows: the Task Scheduler task, the hidden host, alerts through the tray, pantheon:// links.
+        # Linux: D-Bus alerts with buttons, Done, doctor, the systemd --user unit. All: the board.
+        # macOS: the board, and the launchd agents unchanged in shape.
+        os: [windows-2022, windows-11-arm, ubuntu-24.04, ubuntu-24.04-arm, macos-15]
+    env:
+      PANTHEON_VERSION: ${{ inputs.version }}
+      PANTHEON_PREV_VERSION: ${{ inputs.prev }}
+    steps:
+      - uses: actions/checkout@v4
+      # Node here runs the relay, the teammate and this harness; on Linux and macOS
+      # also the person under test. On Windows that person installs with the one line
+      # the relay serves (Pantheon's own Node).
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: install @join-pantheon/cli@${{ inputs.version }} with npm
+        shell: bash
+        run: npm i -g "@join-pantheon/cli@$PANTHEON_VERSION"
+      - name: "Linux: a session bus, and Python's D-Bus binding for the stand-in notification server"
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q dbus-daemon python3-dbus python3-gi
+      - name: desktop
+        run: node desktop.mjs
+        env:
+          DESKTOP_ARTIFACTS: ${{ runner.temp }}/desktop-artifacts
+      - name: keep the logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: desktop-${{ matrix.os }}
+          path: ${{ runner.temp }}/desktop-artifacts
+          if-no-files-found: ignore
+          retention-days: 14
