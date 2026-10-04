@@ -98,7 +98,8 @@ const readText = (f) => { try { return readFileSync(f, "utf8"); } catch { return
 const tail = (s, n = 40) => String(s).trimEnd().split("\n").slice(-n).join("\n");
 const fileSize = (f) => { try { return statSync(f).size; } catch { return -1; } };
 /** What was appended to a file after byte `from`. */
-const since = (f, from) => { const t = readText(f); return from > 0 && t.length >= from ? t.slice(from) : t; };
+/** The log written after byte `from` (fileSize is in bytes; a log with any non-ASCII character has fewer characters than bytes). */
+const since = (f, from) => { let b; try { b = readFileSync(f); } catch { return ""; } return (from > 0 && b.length >= from ? b.subarray(from) : b).toString("utf8"); };
 
 /** A Windows command-line word for cmd.exe: quoted when it holds anything cmd reads. Our words never hold a double quote or %. */
 const winArg = (a) => (a === "" || /[\s&|<>^(),;=!]/.test(a) ? `"${a}"` : a);
@@ -474,7 +475,9 @@ ConvertTo-Json -InputObject $p -Compress -Depth 3`);
     else if (!isMe(trigUser)) bad.push(`the logon trigger is for ${trigUser ?? "every user"}`);
     if (!isMe(princUser)) bad.push(`it runs as ${princUser}`);
     if (!/<LogonType>InteractiveToken<\/LogonType>/.test(princ)) bad.push(`logon type ${/<LogonType>([^<]*)/.exec(princ)?.[1] ?? "?"}`);
-    if (!/<RunLevel>LeastPrivilege<\/RunLevel>/.test(princ)) bad.push(`run level ${/<RunLevel>([^<]*)/.exec(princ)?.[1] ?? "?"}`);
+    // schtasks /Query /XML leaves RunLevel out when it is the default, LeastPrivilege; only HighestAvailable is a failure.
+    const runLevel = /<RunLevel>([^<]*)/.exec(princ)?.[1] ?? "LeastPrivilege";
+    if (runLevel !== "LeastPrivilege") bad.push(`run level ${runLevel}`);
     launchCmd = xmlUn(/<Command>([^<]*)<\/Command>/.exec(xml)?.[1] ?? "");
     launchArgs = xmlUn(/<Arguments>([^<]*)<\/Arguments>/.exec(xml)?.[1] ?? "");
     const how = /pantheon-host[^\\]*\.exe$/i.test(launchCmd) ? "pantheon-host.exe (csc-built)" : /powershell\.exe$/i.test(launchCmd) ? "PowerShell fallback" : `unexpected: ${launchCmd}`;
