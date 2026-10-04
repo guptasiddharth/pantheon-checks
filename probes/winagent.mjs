@@ -16,3 +16,9 @@ run("full path, %LOCALAPPDATA% as the doc writes it", `"%LOCALAPPDATA%\\Pantheon
 run("cmd //c with %LOCALAPPDATA%", `cmd //c "%LOCALAPPDATA%\\Pantheon\\bin\\pantheon.cmd" --version`);
 run("~/AppData path", `~/AppData/Local/Pantheon/bin/pantheon.cmd --version`);
 run("a new login bash (new terminal)", `bash -lc "pantheon --version"`);
+const ps = (label, script) => {
+  const r = spawnSync("powershell", ["-NoProfile", "-Command", script], { encoding: "utf8", timeout: 120_000 });
+  console.log(`--- ${label}: exit ${r.status}\n    ${`${r.stdout}${r.stderr}`.trim().split("\n").slice(-3).join("\n    ")}`);
+};
+ps("PowerShell: ~/AppData/Local/Pantheon/bin/pantheon.cmd", "~/AppData/Local/Pantheon/bin/pantheon.cmd --version; exit $LASTEXITCODE");
+ps("PowerShell: $env:LOCALAPPDATA\\Pantheon\\bin\\pantheon.cmd", "& \"$env:LOCALAPPDATA\\Pantheon\\bin\\pantheon.cmd\" --version; exit $LASTEXITCODE");
