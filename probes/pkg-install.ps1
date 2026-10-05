@@ -118,7 +118,7 @@ switch ($Scenario) {
     Check ($v -eq $newVersion) "the launcher runs from outside the package: $v"
     $p = & $userPath
     Check ((($p -split ';') | Select-Object -First 1) -ieq (Join-Path $curRoot 'bin')) 'the user PATH, read from outside, starts with ~\.pantheon\bin' "$p"
-    Check ($log -match 'from outside PantheonProbe') 'it set PATH from outside the app and said so' ''
+    Check ($log -match 'from outside\s+PantheonProbe') 'it set PATH from outside the app and said so' ''
     Check (-not (schtasks /query /fo csv 2>$null | Select-String 'Pantheon-Path-')) 'the one-off PATH task is gone'
     Check (-not (Get-ChildItem $local -Directory -Filter 'pantheon-probe-*' -ErrorAction SilentlyContinue)) 'no probe folder left in AppData'
     Check (-not (Get-ChildItem $priv -Directory -Filter 'pantheon-probe-*' -ErrorAction SilentlyContinue)) 'none left in the private copy either'
@@ -144,7 +144,7 @@ switch ($Scenario) {
     [IO.File]::WriteAllText((Join-Path $curRoot 'host\notifier.json'), (@{ kind = 'notifier'; cwd = $prof; args = @() } | ConvertTo-Json -Compress))
     Check (Install-Inside 'new') 'the new installer ran inside the package'
     $log = Get-Content -Raw "$W\inner-new.txt"
-    Check ($log -match 'exists only inside PantheonProbe') 'it says the old install was only inside the app' ''
+    Check ($log -match 'exists only inside\s+PantheonProbe') 'it says the old install was only inside the app' ''
     Check ($log -match "Pantheon's background notifier runs on this install") 'it started the background notifier that was set up, on the new install' ''
     $state = Join-Path $curRoot 'host\state.json'
     $up = $false; for ($i = 0; $i -lt 30 -and -not $up; $i++) { if (Test-Path $state) { try { $up = ([DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() - [double](Get-Content -Raw $state | ConvertFrom-Json).beat) -lt 30000 } catch { } }; if (-not $up) { Start-Sleep 1 } }
