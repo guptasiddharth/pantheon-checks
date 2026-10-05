@@ -7,6 +7,10 @@ on:
         description: "the older release the member installed with npm and joined with"
         default: "0.31.0"
         required: true
+      os:
+        description: "runners, as JSON"
+        default: '["windows-2022","ubuntu-24.04","macos-15"]'
+        required: false
 
 permissions:
   contents: read
@@ -19,7 +23,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [windows-2022, ubuntu-24.04, macos-15]
+        os: ${{ fromJSON(inputs.os) }}
     env:
       PANTHEON_FROM: ${{ inputs.from }}
     steps:
