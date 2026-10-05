@@ -15,7 +15,8 @@ if (-not $kits) { Say 'NO makeappx'; exit 2 }
 $makeappx = $kits.FullName; $signtool = Join-Path $kits.DirectoryName 'signtool.exe'
 Say "tools: $makeappx"
 $csc = "$env:windir\Microsoft.NET\Framework64\v4.0.30319\csc.exe"
-Set-Content "$P\probe.cs" 'class P { static void Main() { System.Threading.Thread.Sleep(1000); } }'
+# The package's own app starts PowerShell and waits for it, the way the Claude app starts the shells its agent uses.
+Set-Content "$P\probe.cs" 'class P { static void Main() { var p = System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(System.Environment.ExpandEnvironmentVariables("%windir%\\System32\\WindowsPowerShell\\v1.0\\powershell.exe"), "-NoProfile -ExecutionPolicy Bypass -File C:\\pprobe\\inner.ps1") { UseShellExecute = false, CreateNoWindow = true }); p.WaitForExit(); } }'
 & $csc /nologo /target:winexe /out:"$P\pkg\probe.exe" "$P\probe.cs" | Out-Null
 Add-Type -AssemblyName System.Drawing
 $bmp = New-Object System.Drawing.Bitmap 150, 150; $bmp.Save("$P\pkg\logo.png", [System.Drawing.Imaging.ImageFormat]::Png); $bmp.Dispose()
@@ -103,7 +104,8 @@ W 'done'
 '@)
 
 Say 'running PowerShell inside the package...'
-Invoke-CommandInDesktopPackage -PackageFamilyName $pfn -AppId App -Command "$env:windir\System32\WindowsPowerShell\v1.0\powershell.exe" -Args '-NoProfile -ExecutionPolicy Bypass -File C:\pprobe\inner.ps1'
+# Activated as an app (what launching it from the Start menu does), so the package's whole process tree is the app's.
+Start-Process "shell:AppsFolder\$pfn!App"
 for ($i = 0; $i -lt 60; $i++) { if ((Test-Path "$P\inner.txt") -and (Select-String -Path "$P\inner.txt" -Pattern '^done' -Quiet)) { break }; Start-Sleep 1 }
 Start-Sleep 3
 
