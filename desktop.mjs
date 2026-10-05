@@ -738,15 +738,34 @@ ConvertTo-Json -InputObject @{ detections = $t; threats = $n } -Compress -Depth 
 $o = @()
 foreach ($id in @(${psList})) {
   try {
-    $n = [Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier($id); $s = $n.Setting
-    $o += [pscustomobject]@{ aumid = $id; text = [string]$s; value = $(if ($null -eq $s) { -1 } else { [int]$s }); type = $(if ($null -eq $s) { 'null' } else { $s.GetType().FullName }) }
+    $n = [Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier($id)
+    $p = $n.Setting
+    try { $s = $n.get_Setting(); $o += [pscustomobject]@{ aumid = $id; text = [string]$s; value = [int]$s; property = [string]$p } }
+    catch { $e = $_.Exception; if ($e.InnerException) { $e = $e.InnerException }; $o += [pscustomobject]@{ aumid = $id; error = $e.Message; property = $(if ($null -eq $p) { '$null' } else { [string]$p }) } }
   } catch { $o += [pscustomobject]@{ aumid = $id; error = $_.Exception.Message } }
 }
 ConvertTo-Json -InputObject @($o) -Compress`);
     const j = jsonLine(r.stdout);
     return Array.isArray(j) ? j : j ? [j] : [{ error: r.out.slice(0, 300) }];
   };
-  const showSettings = (l) => l.map((s) => `${s.aumid?.startsWith("{") ? "PowerShell" : s.aumid}: ${s.error ? `error ${s.error}` : `${s.text || "(empty)"} (${s.value}, ${s.type})`}`).join("; ");
+  const showSettings = (l) => l.map((s) => `${s.aumid?.startsWith("{") ? "PowerShell" : s.aumid}: ${s.error ? `get_Setting() throws "${s.error}" (.Setting reads ${s.property})` : `${s.text} (${s.value})`}`).join("; ");
+  /** The harness's own toast under an app id: does Windows keep it in that id's history? (Removed again afterwards.) */
+  const probeToast = (id, tag) => {
+    const r = ps(`[Console]::OutputEncoding = [Text.Encoding]::UTF8
+[void][Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime]
+[void][Windows.Data.Xml.Dom.XmlDocument, Windows.Data.Xml.Dom.XmlDocument, ContentType = WindowsRuntime]
+try {
+  $doc = [Windows.Data.Xml.Dom.XmlDocument]::new()
+  $doc.LoadXml('<toast><visual><binding template="ToastGeneric"><text>pantheon-checks</text><text>a probe toast from the check harness</text></binding></visual></toast>')
+  $t = [Windows.UI.Notifications.ToastNotification]::new($doc); $t.Tag = $env:PD_TAG; $t.Group = 'pdcheck'
+  [Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier($env:PD_ID).Show($t)
+  Start-Sleep -Milliseconds 800
+  $c = @([Windows.UI.Notifications.ToastNotificationManager]::History.GetHistory($env:PD_ID) | Where-Object { $_.Tag -eq $env:PD_TAG }).Count
+  try { [Windows.UI.Notifications.ToastNotificationManager]::History.Remove($env:PD_TAG, 'pdcheck', $env:PD_ID) } catch { }
+  Write-Output ('in-history ' + $c)
+} catch { Write-Output ('threw ' + $_.Exception.Message) }`, { env: { ...process.env, PD_ID: id, PD_TAG: tag } });
+    return { inHistory: /in-history [1-9]/.test(r.out), said: r.out.trim().split("\n").pop() };
+  };
   const toastsOn = await step("toasts switched on for this user (ToastEnabled=1, both app ids Enabled=1, no policy against them); Windows then reports them Enabled", () => {
     const before = toastSettings();
     const r = ps(`[Console]::OutputEncoding = [Text.Encoding]::UTF8
@@ -790,19 +809,15 @@ public static class PdWnf {
 $said.Add('services: ' + ((Get-Service -Name 'WpnService', 'WpnUserService*' -ErrorAction SilentlyContinue | ForEach-Object { $_.Name + ' ' + $_.Status }) -join ', '))
 $said | ForEach-Object { Write-Output $_ }`);
     writeFileSync(join(ART, "toast-settings.txt"), r.out);
-    let after = toastSettings();
-    let restarted = "";
-    if (!after.some((s) => s.value === 0)) {
-      // The user's notification service may cache the switch: restart it, then ask again.
-      const rs = ps("Get-Service -Name 'WpnUserService*' -ErrorAction SilentlyContinue | Restart-Service -Force -ErrorAction Continue; Start-Sleep -Seconds 3; Write-Output 'restarted'");
-      restarted = ` (restarted WpnUserService: ${rs.out.trim().split("\n").pop()})`;
-      after = toastSettings();
-    }
+    const after = toastSettings();
+    // Whether Windows shows toasts here at all, asked with a toast under a THIRD app id
+    // (Explorer's), so that neither of Pantheon's ids has shown a toast before Pantheon does.
+    const probe = probeToast("Microsoft.Windows.Explorer", "pdprobe0");
     const focus = /Focus Assist profile (\S+)/.exec(r.out)?.[1];
-    const how = `before: ${showSettings(before)} → after: ${showSettings(after)}${restarted}. ${r.out.split("\n").map((l) => l.trim()).filter(Boolean).join("; ")}`;
-    if (!after.some((s) => s.value === 0)) return NOT_RUN(`Windows still reports toasts off for both app ids after switching them on — ${how}`);
+    const how = `Pantheon's ids before: ${showSettings(before)} → after: ${showSettings(after)}. ${r.out.split("\n").map((l) => l.trim()).filter(Boolean).join("; ")}`;
+    if (!probe.inHistory) return NOT_RUN(`Windows does not keep toasts here: a toast under Microsoft.Windows.Explorer did not reach its history (${probe.said}). ${how}`);
     if (focus && !/^0/.test(focus) && !/unreadable/.test(focus)) console.log(`  (Focus Assist is on here, profile ${focus}: a toast still reaches the history, it is only kept off the screen)`);
-    return how;
+    return `Windows shows toasts here: the harness's toast under Microsoft.Windows.Explorer reached its history. ${how}`;
   }, noHost);
 
   /* ---- an alert: the teammate's decision, through the notifier and the tray ---- */
@@ -853,6 +868,21 @@ $said | ForEach-Object { Write-Output $_ }`);
     throw new Error(line.trim());
   }, noAlert);
   clearInterval(watcher);
+
+  const firstIsToast = await step("Windows shows toasts here (above), so the first alert is a toast, not a tray balloon", async () => {
+    const re = new RegExp(`(tray: shown|tray: balloon for|tray: not shown|tray: dropped|\\bshown:|handed to a balloon:|not shown:)[^\\n]*decision ${oblig}[^\\n]*`);
+    const line = await waitFor(() => re.exec(since(alertsLog, aFrom))?.[0], 15_000, 250);
+    if (!line) throw new Error(`alerts.log has no outcome for ${oblig}`);
+    if (/tray: shown|\bshown:/.test(line) && !/not shown|balloon/.test(line)) return line.trim().slice(25, 260);
+    throw new Error(`Pantheon fell back to a balloon although Windows shows toasts here: "${line.trim().slice(33)}". Windows says, for Pantheon's app ids: ${showSettings(toastSettings())}. ToastNotifier.Setting throws Element not found (0x80070490) for an app id that has never shown a toast for this user — whatever ToastEnabled says — and Windows PowerShell turns the throw into $null, which Pantheon reads as "off", so the first toast is never shown.`);
+  }, noAlert ?? (toastsOn ? null : toastsOn === null ? "toasts could not be shown here (NOT RUN above)" : "toasts could not be switched on (FAIL above)"));
+
+  const primed = firstIsToast ? true : await step("the harness shows one toast of its own under each of Pantheon's app ids (as a first toast would): ToastNotifier.Setting then reads Enabled", () => {
+    const said = AUMIDS.map((id) => `${id.startsWith("{") ? "PowerShell" : id}: ${probeToast(id, "pdprime").said}`);
+    const now = toastSettings();
+    if (!now.some((x) => x.value === 0)) throw new Error(`still not Enabled: ${showSettings(now)} (${said.join("; ")})`);
+    return `${said.join("; ")} → ${showSettings(now)}`;
+  }, noAlert ?? (toastsOn ? null : "toasts are not shown here (above)"));
 
   /** Run a pantheon:// link exactly as Windows runs the registered handler: CreateProcess on the registered command, %1 replaced. */
   const viaHandler = (uri) => ps(`
@@ -910,7 +940,7 @@ Write-Output $e`, { env: { ...member.env, PD_URI: uri }, timeout: 180_000 });
 
   const LITERAL = "<b>&</b>";
   let act2 = "", oblig2 = "", accepted = "", stored = null;
-  const noToasts = noAlert ?? (toastsOn ? null : toastsOn === null ? "toasts could not be switched on here (NOT RUN above)" : "toasts could not be switched on (FAIL above)");
+  const noToasts = noAlert ?? (toastsOn ? null : toastsOn === null ? "Windows does not show toasts here (NOT RUN above)" : "toasts could not be switched on (FAIL above)") ?? (primed ? null : "Pantheon's app ids could not be made to read Enabled (FAIL above)");
   const toasted = await step("a second decision (its text holds <b>&</b>) is shown as a real toast: alerts.log says toast, not balloon", async () => {
     const a0 = fileSize(alertsLog), n0 = fileSize(notifierLog);
     act2 = await askForDecision(`Ship the ${LITERAL} banner today`, "release-banner");
