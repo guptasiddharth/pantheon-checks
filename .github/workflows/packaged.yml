@@ -1,0 +1,33 @@
+name: packaged
+
+# Pantheon's Windows installer run from inside an app package (as the Claude
+# desktop app runs its agent's shell), checked from outside it. probes/pkg-install.ps1.
+on:
+  workflow_dispatch:
+    inputs:
+      release:
+        description: "release URL holding join-pantheon-cli-<version>.tgz and install-new.ps1"
+        default: "https://github.com/guptasiddharth/pantheon-checks/releases/download/test-0.33.1-1"
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  packaged:
+    name: ${{ matrix.os }} ${{ matrix.scenario }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-2022, windows-11-arm]
+        scenario: [control, fresh, tany, legacy]
+    steps:
+      - uses: actions/checkout@v4
+      - name: ${{ matrix.scenario }}
+        shell: cmd
+        env:
+          PANTHEON_TEST_RELEASE: ${{ inputs.release }}
+        # Windows PowerShell 5.1, with none of PowerShell 7's module path.
+        run: set PSModulePath=&& %SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe -NoProfile -ExecutionPolicy Bypass -File probes\pkg-install.ps1 -Scenario ${{ matrix.scenario }}
