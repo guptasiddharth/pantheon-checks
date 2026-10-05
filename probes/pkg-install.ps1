@@ -186,6 +186,8 @@ switch ($Scenario) {
     Check ($log -match 'exists only inside\s+PantheonProbe') 'it says the old install was only inside the app' ''
     Check ($log -match "Pantheon's background notifier runs on this install") 'it started the background notifier that was set up, on the new install' ''
     Check ($log -match 'Your coding agents now use this install') 'it pointed the coding agents at the new install (they named the app-only one)' ''
+    $said = ([regex]::Match($log, 'now use this install: ([^(]*)\(')).Groups[1].Value
+    Check (($said -match 'hooks') -and ($said -notmatch 'kiro|cursor|copilot|codex|vs code')) "it names only what it pointed here (Windows PowerShell 5.1 reads the rows one by one): $said" $said
     $hk = Get-Content -Raw (Join-Path $prof '.claude\settings.json')
     Check (($hk -match [regex]::Escape(($curRoot -replace '\\', '/') + '/runtime/node/node.exe')) -and ($hk -notmatch 'AppData/Local/Pantheon')) "Claude Code's hooks now run the Node in $curRoot, not the app-only one" ($hk.Substring(0, [Math]::Min(300, $hk.Length)))
     Check ($hk -match '"mine":\s*"kept"') 'the rest of that settings file is as it was' ''
