@@ -4,11 +4,14 @@
  *
  *   Windows  the per-user Task Scheduler task and the hidden background host it
  *            starts (worker, notifier, tray), what keeps them running, an alert
- *            for a teammate's decision going through the tray, pantheon:// links,
- *            the board, `stop all` and `uninstall`;
+ *            for a teammate's decision going through the tray, toasts switched
+ *            on and a real toast in Windows' own history (buttons, Done activated
+ *            through the shell), Windows Defender scanning what was installed,
+ *            pantheon:// links, the board, `stop all` and `uninstall`;
  *   Linux    alerts over D-Bus with buttons (a session bus and a stand-in
- *            notification server started here), Done answering the decision on
- *            the relay, `doctor`'s alerts line, the systemd --user unit, the board;
+ *            notification server started here, then the real dunst on Xvfb),
+ *            Done answering the decision on the relay, `doctor`'s alerts line,
+ *            the systemd --user unit, the board;
  *   macOS    the board, and the launchd agents of the notifier and menu bar
  *            compared with the previous release's.
  *
@@ -645,6 +648,163 @@ ConvertTo-Json -InputObject @{ main = $main; visible = @($vis); conhost = $con }
     return `pid ${old.pid} → ${fresh.pid}`;
   }, noHost);
 
+  /* ---- Windows Defender on what Pantheon installed ---- */
+
+  const defenderStatus = () => {
+    const r = ps(`[Console]::OutputEncoding = [Text.Encoding]::UTF8
+$o = [ordered]@{}
+$plat = Get-ChildItem -LiteralPath (Join-Path $env:ProgramData 'Microsoft\\Windows Defender\\Platform') -Directory -ErrorAction SilentlyContinue | Where-Object { Test-Path -LiteralPath (Join-Path $_.FullName 'MpCmdRun.exe') } | Sort-Object { [version]($_.Name -replace '-.*$', '') } -Descending | Select-Object -First 1
+$mp = if ($plat) { Join-Path $plat.FullName 'MpCmdRun.exe' } else { Join-Path $env:ProgramFiles 'Windows Defender\\MpCmdRun.exe' }
+$o.mpcmdrun = $mp; $o.mpExists = [bool](Test-Path -LiteralPath $mp)
+$svc = Get-Service -Name WinDefend -ErrorAction SilentlyContinue
+$o.service = if ($svc) { [string]$svc.Status + ' / ' + [string]$svc.StartType } else { 'absent' }
+try {
+  $s = Get-MpComputerStatus -ErrorAction Stop
+  foreach ($k in 'AMEngineVersion','AMProductVersion','AMServiceEnabled','AntivirusEnabled','AntivirusSignatureVersion','AntivirusSignatureLastUpdated','RealTimeProtectionEnabled','AMRunningMode','IsTamperProtected','OnAccessProtectionEnabled','BehaviorMonitorEnabled') { $o[$k] = [string]$s.$k }
+} catch { $o.statusError = $_.Exception.Message }
+ConvertTo-Json -InputObject $o -Compress`);
+    try { return JSON.parse(r.stdout.split("\n").filter((l) => l.trim().startsWith("{")).at(-1)); } catch { return { error: r.out.slice(0, 400) }; }
+  };
+  let defender = null;
+  const defenderHere = await step("Windows Defender runs here: engine and signatures (updated now, best effort), real-time protection", () => {
+    const before = defenderStatus();
+    if (!before.mpExists) return NOT_RUN(`no MpCmdRun.exe on this runner (${before.mpcmdrun ?? "?"}); WinDefend service: ${before.service ?? "?"}; ${before.statusError ?? before.error ?? ""}`);
+    if (before.statusError) return NOT_RUN(`Get-MpComputerStatus fails, so Defender is not running here: ${before.statusError}; WinDefend service: ${before.service}`);
+    if (before.AMServiceEnabled === "False" || before.AntivirusEnabled === "False") return NOT_RUN(`Defender is installed but switched off here (AMServiceEnabled ${before.AMServiceEnabled}, AntivirusEnabled ${before.AntivirusEnabled}, mode ${before.AMRunningMode}); WinDefend ${before.service}`);
+    const u = run(before.mpcmdrun, ["-SignatureUpdate"], { timeout: 600_000 });
+    writeFileSync(join(ART, "defender-update.txt"), u.out);
+    defender = defenderStatus();
+    defender.update = `exit ${u.code}${u.code === 0 ? "" : `: ${u.out.trim().split("\n").filter(Boolean).slice(-2).join(" / ").slice(0, 200)}`}`;
+    writeFileSync(join(ART, "defender-status.json"), JSON.stringify({ before, after: defender }, null, 2));
+    return `engine ${defender.AMEngineVersion}, product ${defender.AMProductVersion}, signatures ${before.AntivirusSignatureVersion} → ${defender.AntivirusSignatureVersion} (${defender.AntivirusSignatureLastUpdated}; -SignatureUpdate ${defender.update}); real-time protection ${defender.RealTimeProtectionEnabled === "True" ? "ON" : "off"}, on-access ${defender.OnAccessProtectionEnabled}, mode ${defender.AMRunningMode}, tamper protection ${defender.IsTamperProtected}`;
+  }, noTask);
+
+  await step("Windows Defender finds no threat in the compiled launcher, the tray and notice scripts, node.exe, or the installed package", () => {
+    // What Pantheon put on this machine, found from the outside: the launcher(s)
+    // in ~/.pantheon/bin, the package wherever its helper scripts are, and the
+    // programs the running Pantheon processes were started from.
+    const f = ps(`[Console]::OutputEncoding = [Text.Encoding]::UTF8
+$o = [ordered]@{}
+$o.launchers = @(Get-ChildItem -LiteralPath (Join-Path $env:PD_PH 'bin') -Filter 'pantheon-host-*.exe' -File -ErrorAction SilentlyContinue | ForEach-Object { $_.FullName })
+$roots = @((Join-Path $env:LOCALAPPDATA 'Pantheon'), $env:PD_PH, $env:PD_NPM) | Where-Object { $_ -and (Test-Path -LiteralPath $_) }
+$o.scripts = @(foreach ($r in $roots) { foreach ($n in 'pantheon-tray.ps1', 'pantheon-notice.ps1') { Get-ChildItem -LiteralPath $r -Recurse -File -Filter $n -ErrorAction SilentlyContinue | ForEach-Object { $_.FullName } } }) | Select-Object -Unique
+$o.packages = @($o.scripts | ForEach-Object { Split-Path (Split-Path (Split-Path $_ -Parent) -Parent) -Parent }) | Select-Object -Unique
+$o.programs = @(Get-CimInstance Win32_Process | Where-Object { ($_.CommandLine -match 'pantheon') -and $_.ExecutablePath -and ($_.ExecutablePath -notmatch '\\\\Windows\\\\') } | ForEach-Object { $_.ExecutablePath }) | Select-Object -Unique
+ConvertTo-Json -InputObject $o -Compress`, { env: { ...member.env, PD_PH: member.ph, PD_NPM: join(npmPantheon, "..", "node_modules", "@join-pantheon", "cli") } });
+    let found;
+    try { found = JSON.parse(f.stdout.split("\n").filter((l) => l.trim().startsWith("{")).at(-1)); } catch { throw new Error(`could not list what to scan: ${f.out.slice(0, 400)}`); }
+    const arr = (v) => (Array.isArray(v) ? v : v ? [v] : []);
+    const launchers = arr(found.launchers), scripts = arr(found.scripts), packages = arr(found.packages), programs = arr(found.programs);
+    const node = programs.filter((p) => /\\node\.exe$/i.test(p));
+    const missing = [];
+    if (!launchers.length) missing.push(`no pantheon-host-*.exe in ${join(member.ph, "bin")}`);
+    if (!scripts.some((s) => /pantheon-tray\.ps1$/i.test(s)) || !scripts.some((s) => /pantheon-notice\.ps1$/i.test(s))) missing.push(`tray/notice scripts: ${JSON.stringify(scripts)}`);
+    if (!node.length) missing.push(`no node.exe among the running Pantheon programs: ${JSON.stringify(programs)}`);
+    if (missing.length) throw new Error(`nothing to scan: ${missing.join("; ")}`);
+    const targets = [...new Set([...launchers, ...scripts, ...node, ...programs, ...packages])];
+    const mp = (defender ?? defenderStatus()).mpcmdrun;
+    const t0 = new Date(Date.now() - 60_000).toISOString();
+    const scans = targets.map((t) => {
+      const r = run(mp, ["-Scan", "-ScanType", "3", "-File", t, "-DisableRemediation"], { timeout: 900_000 });
+      return { target: t, code: r.code, said: r.out.trim().split("\n").map((l) => l.trim()).filter(Boolean).slice(-3).join(" / ") };
+    });
+    // Defender's own record of detections, for these paths (or anything since the scans began).
+    const d = ps(`[Console]::OutputEncoding = [Text.Encoding]::UTF8
+$since = [datetime]::Parse($env:PD_SINCE).ToLocalTime()
+$t = @(Get-MpThreatDetection -ErrorAction SilentlyContinue | ForEach-Object { [pscustomobject]@{ id = [string]$_.ThreatID; at = $_.InitialDetectionTime.ToString('o'); recent = ($_.InitialDetectionTime -ge $since); resources = @($_.Resources | ForEach-Object { [string]$_ }); process = [string]$_.ProcessName } })
+$n = @(Get-MpThreat -ErrorAction SilentlyContinue | ForEach-Object { [string]$_.ThreatName + ' ' + [string]$_.ThreatID })
+ConvertTo-Json -InputObject @{ detections = $t; threats = $n } -Compress -Depth 4`, { env: { ...process.env, PD_SINCE: t0 } });
+    let det = { detections: [], threats: [] };
+    try { det = JSON.parse(d.stdout.split("\n").filter((l) => l.trim().startsWith("{")).at(-1)); } catch { /* reported below */ }
+    const lower = targets.map((t) => t.toLowerCase());
+    const ours = arr(det.detections).filter((x) => x.recent || arr(x.resources).some((r) => lower.some((t) => r.toLowerCase().includes(t))));
+    writeFileSync(join(ART, "defender-scans.json"), JSON.stringify({ targets, scans, detections: det }, null, 2));
+    const flagged = scans.filter((s) => s.code === 2);
+    const broken = scans.filter((s) => s.code !== 0 && s.code !== 2);
+    if (flagged.length || ours.length) throw new Error(`THREAT reported:\n${flagged.map((s) => `${s.target}: exit 2: ${s.said}`).join("\n")}\n${JSON.stringify(ours).slice(0, 1200)}\nGet-MpThreat: ${JSON.stringify(det.threats).slice(0, 400)}`);
+    if (broken.length) throw new Error(`MpCmdRun could not scan:\n${broken.map((s) => `${s.target}: exit ${s.code}: ${s.said}`).join("\n")}`);
+    return `${scans.length} scans, all exit 0 "found no threats" — ${scans.map((s) => s.target.replace(/^.*\\(AppData|\.pantheon)\\/i, "…\\$1\\")).join(", ")}; Get-MpThreatDetection: ${arr(det.detections).length} detection(s) on this machine, none for these paths`;
+  }, noTask ?? (defenderHere ? null : defenderHere === null ? "Defender is not available here (NOT RUN above)" : "Defender's status could not be read (FAIL above)"));
+
+  /* ---- real toasts: notifications switched on for this user, as on a person's PC ---- */
+
+  const AUMIDS = ["JoinPantheon.Pantheon", "{1AC14E77-02E7-4E5D-B744-2EB1AE5198B7}\\WindowsPowerShell\\v1.0\\powershell.exe"];
+  const psList = AUMIDS.map((a) => `'${a}'`).join(", ");
+  const jsonLine = (out) => { try { return JSON.parse(out.split("\n").filter((l) => /^\s*[[{]/.test(l)).at(-1)); } catch { return null; } };
+  /** What Windows says, per app id, about showing its toasts (ToastNotifier.Setting: Enabled = 0). */
+  const toastSettings = () => {
+    const r = ps(`[Console]::OutputEncoding = [Text.Encoding]::UTF8
+[void][Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime]
+$o = @()
+foreach ($id in @(${psList})) {
+  try {
+    $n = [Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier($id); $s = $n.Setting
+    $o += [pscustomobject]@{ aumid = $id; text = [string]$s; value = $(if ($null -eq $s) { -1 } else { [int]$s }); type = $(if ($null -eq $s) { 'null' } else { $s.GetType().FullName }) }
+  } catch { $o += [pscustomobject]@{ aumid = $id; error = $_.Exception.Message } }
+}
+ConvertTo-Json -InputObject @($o) -Compress`);
+    const j = jsonLine(r.stdout);
+    return Array.isArray(j) ? j : j ? [j] : [{ error: r.out.slice(0, 300) }];
+  };
+  const showSettings = (l) => l.map((s) => `${s.aumid?.startsWith("{") ? "PowerShell" : s.aumid}: ${s.error ? `error ${s.error}` : `${s.text || "(empty)"} (${s.value}, ${s.type})`}`).join("; ");
+  const toastsOn = await step("toasts switched on for this user (ToastEnabled=1, both app ids Enabled=1, no policy against them); Windows then reports them Enabled", () => {
+    const before = toastSettings();
+    const r = ps(`[Console]::OutputEncoding = [Text.Encoding]::UTF8
+$said = New-Object System.Collections.Generic.List[string]
+$pn = 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\PushNotifications'
+$said.Add('ToastEnabled was ' + [string](Get-ItemProperty -LiteralPath $pn -Name ToastEnabled -ErrorAction SilentlyContinue).ToastEnabled)
+if (-not (Test-Path -LiteralPath $pn)) { New-Item -Path $pn -Force | Out-Null }
+New-ItemProperty -LiteralPath $pn -Name ToastEnabled -Value 1 -PropertyType DWord -Force | Out-Null
+$ns = 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Notifications\\Settings'
+if (-not (Test-Path -LiteralPath $ns)) { New-Item -Path $ns -Force | Out-Null }
+New-ItemProperty -LiteralPath $ns -Name NOC_GLOBAL_SETTING_TOASTS_ENABLED -Value 1 -PropertyType DWord -Force | Out-Null
+foreach ($id in @(${psList})) {
+  $k = $ns + '\\' + $id
+  $was = Get-ItemProperty -LiteralPath $k -ErrorAction SilentlyContinue
+  $said.Add($id + ': Enabled was ' + [string]$was.Enabled)
+  if (-not (Test-Path -LiteralPath $k)) { New-Item -Path $k -Force | Out-Null }
+  New-ItemProperty -LiteralPath $k -Name Enabled -Value 1 -PropertyType DWord -Force | Out-Null
+  New-ItemProperty -LiteralPath $k -Name ShowInActionCenter -Value 1 -PropertyType DWord -Force | Out-Null
+}
+foreach ($p in 'HKCU:\\Software\\Policies\\Microsoft\\Windows\\CurrentVersion\\PushNotifications', 'HKLM:\\Software\\Policies\\Microsoft\\Windows\\CurrentVersion\\PushNotifications', 'HKCU:\\Software\\Policies\\Microsoft\\Windows\\Explorer', 'HKLM:\\Software\\Policies\\Microsoft\\Windows\\Explorer') {
+  $v = Get-ItemProperty -LiteralPath $p -ErrorAction SilentlyContinue
+  foreach ($n in 'NoToastApplicationNotification', 'NoCloudApplicationNotification', 'DisableNotificationCenter') {
+    if ($v -and $null -ne $v.$n) {
+      $said.Add('policy ' + $p + ' ' + $n + '=' + $v.$n)
+      if ($n -ne 'NoCloudApplicationNotification') { try { Remove-ItemProperty -LiteralPath $p -Name $n -ErrorAction Stop; $said.Add('  removed') } catch { $said.Add('  could not remove: ' + $_.Exception.Message) } }
+    }
+  }
+}
+# Focus Assist (quiet hours): Windows keeps the switch in a CloudStore blob, but publishes the active profile
+# in the WNF state WNF_SHEL_QUIETHOURS_ACTIVE_PROFILE_CHANGED (0 = off, 1 = priority only, 2 = alarms only).
+try {
+  Add-Type -TypeDefinition @"
+using System; using System.Runtime.InteropServices;
+public static class PdWnf {
+  [DllImport("ntdll.dll")] static extern int NtQueryWnfStateData(ref ulong name, IntPtr type, IntPtr scope, out uint stamp, byte[] buf, ref uint size);
+  public static string Quiet() { ulong n = 0x0D83063EA3BF1C75UL; uint stamp; var b = new byte[4]; uint size = 4; int st = NtQueryWnfStateData(ref n, IntPtr.Zero, IntPtr.Zero, out stamp, b, ref size); if (st != 0) return "unreadable (NTSTATUS 0x" + st.ToString("X8") + ")"; return size == 0 ? "0 (never set)" : BitConverter.ToInt32(b, 0).ToString(); }
+}
+"@
+  $said.Add('Focus Assist profile ' + [PdWnf]::Quiet())
+} catch { $said.Add('Focus Assist: ' + $_.Exception.Message) }
+$said.Add('services: ' + ((Get-Service -Name 'WpnService', 'WpnUserService*' -ErrorAction SilentlyContinue | ForEach-Object { $_.Name + ' ' + $_.Status }) -join ', '))
+$said | ForEach-Object { Write-Output $_ }`);
+    writeFileSync(join(ART, "toast-settings.txt"), r.out);
+    let after = toastSettings();
+    let restarted = "";
+    if (!after.some((s) => s.value === 0)) {
+      // The user's notification service may cache the switch: restart it, then ask again.
+      const rs = ps("Get-Service -Name 'WpnUserService*' -ErrorAction SilentlyContinue | Restart-Service -Force -ErrorAction Continue; Start-Sleep -Seconds 3; Write-Output 'restarted'");
+      restarted = ` (restarted WpnUserService: ${rs.out.trim().split("\n").pop()})`;
+      after = toastSettings();
+    }
+    const focus = /Focus Assist profile (\S+)/.exec(r.out)?.[1];
+    const how = `before: ${showSettings(before)} → after: ${showSettings(after)}${restarted}. ${r.out.split("\n").map((l) => l.trim()).filter(Boolean).join("; ")}`;
+    if (!after.some((s) => s.value === 0)) return NOT_RUN(`Windows still reports toasts off for both app ids after switching them on — ${how}`);
+    if (focus && !/^0/.test(focus) && !/unreadable/.test(focus)) console.log(`  (Focus Assist is on here, profile ${focus}: a toast still reaches the history, it is only kept off the screen)`);
+    return how;
+  }, noHost);
+
   /* ---- an alert: the teammate's decision, through the notifier and the tray ---- */
 
   const notices = join(H, "notices");
@@ -745,6 +905,73 @@ Write-Output $e`, { env: { ...member.env, PD_URI: uri }, timeout: 180_000 });
     if (!ans) throw new Error(`no ANSWER to ${actId} from ${memberId} on the relay`);
     return `buttons ${(q.toast.buttons ?? []).map((b) => b.content).join("/")}; ANSWER ${ans.id}: "${String(ans.body).slice(0, 60)}"`;
   }, noAlert);
+
+  /* ---- a real toast: in Windows' own history, its buttons, Done activated as Windows does ---- */
+
+  const LITERAL = "<b>&</b>";
+  let act2 = "", oblig2 = "", accepted = "", stored = null;
+  const noToasts = noAlert ?? (toastsOn ? null : toastsOn === null ? "toasts could not be switched on here (NOT RUN above)" : "toasts could not be switched on (FAIL above)");
+  const toasted = await step("a second decision (its text holds <b>&</b>) is shown as a real toast: alerts.log says toast, not balloon", async () => {
+    const a0 = fileSize(alertsLog), n0 = fileSize(notifierLog);
+    act2 = await askForDecision(`Ship the ${LITERAL} banner today`, "release-banner");
+    const hit = await waitFor(() => /> notified for (o_\w+)/.exec(since(notifierLog, n0)) || /! could not show a desktop notification for (o_\w+)/.exec(since(notifierLog, n0)), 120_000, 250);
+    if (!hit) throw new Error(`nothing in notifier.log 120 s after ${act2}:\n${tail(since(notifierLog, n0), 10)}`);
+    oblig2 = hit[1];
+    const re = new RegExp(`(tray: shown|tray: balloon for|tray: not shown|tray: dropped|\\bshown:|handed to a balloon:|not shown:)[^\\n]*decision ${oblig2}[^\\n]*`);
+    const line = await waitFor(() => re.exec(since(alertsLog, a0))?.[0], 45_000, 250);
+    if (!line) throw new Error(`alerts.log has no outcome for ${oblig2} after 45 s:\n${tail(since(alertsLog, a0), 8)}`);
+    if (!/tray: shown|\bshown:/.test(line) || /not shown|balloon/.test(line)) throw new Error(`not a toast, with toasts switched on: ${line.trim()}\ntoast settings now: ${showSettings(toastSettings())}`);
+    // "(unseen JoinPantheon.Pantheon | shown <id>)": the id the toast went out under is the one "shown".
+    const said = /\(([^()]*)\)\s*$/.exec(line.trim())?.[1] ?? "";
+    accepted = said.split(" | ").map((x) => /^shown (.+)$/.exec(x.trim())?.[1]).find(Boolean) ?? "";
+    if (!AUMIDS.includes(accepted)) throw new Error(`alerts.log does not say which app id took it: ${line.trim()}`);
+    return `${line.trim().slice(25, 260)} — Windows accepted ${accepted}`;
+  }, noToasts);
+  const noToast = noToasts ?? (toasted ? null : "no toast was shown (FAIL above)");
+
+  await step("Windows' own toast history for that app id holds it (tag, group), with Done, Explain and Open board, and the text <b>&</b> as text", async () => {
+    const hist = () => {
+      const r = ps(`[Console]::OutputEncoding = [Text.Encoding]::UTF8
+[void][Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime]
+$o = @()
+foreach ($id in @(${psList})) {
+  try { foreach ($t in [Windows.UI.Notifications.ToastNotificationManager]::History.GetHistory($id)) { $o += [pscustomobject]@{ aumid = $id; tag = [string]$t.Tag; group = [string]$t.Group; xml = $t.Content.GetXml() } } }
+  catch { $o += [pscustomobject]@{ aumid = $id; error = $_.Exception.Message } }
+}
+ConvertTo-Json -InputObject @($o) -Compress -Depth 4`);
+      const j = jsonLine(r.stdout);
+      return { list: Array.isArray(j) ? j : j ? [j] : [], raw: r.out };
+    };
+    let h = null;
+    stored = await waitFor(() => { h = hist(); return h.list.find((t) => t.tag === oblig2 && t.aumid === accepted) ?? null; }, 15_000, 1000);
+    writeFileSync(join(ART, "toast-history.json"), JSON.stringify(h?.list ?? [], null, 2));
+    if (!stored) throw new Error(`no toast tagged ${oblig2} in the history of ${accepted}. History: ${JSON.stringify((h?.list ?? []).map((t) => ({ aumid: t.aumid, tag: t.tag, group: t.group, error: t.error }))).slice(0, 600)}\n${h?.raw.slice(0, 300)}`);
+    const actions = [...stored.xml.matchAll(/<action\b([^>]*)\/?>/g)].map((m) => Object.fromEntries([...m[1].matchAll(/([\w:]+)="([^"]*)"/g)].map((a) => [a[1], xmlUn(a[2])])));
+    const names = actions.map((a) => a.content);
+    const bad = [];
+    for (const b of ["Done", "Explain", "Open board"]) if (!names.includes(b)) bad.push(`no ${b} button`);
+    for (const a of actions) if (a.activationType !== "protocol" || !/^pantheon:\/\//.test(a.arguments ?? "")) bad.push(`${a.content}: ${a.activationType} ${a.arguments}`);
+    const texts = [...stored.xml.matchAll(/<text\b[^>]*>([^<]*)<\/text>/g)].map((m) => xmlUn(m[1]));
+    if (!texts.some((t) => t.includes(LITERAL))) bad.push(`no text line holds ${LITERAL} as text: ${JSON.stringify(texts)}`);
+    if (stored.group !== "pantheon") bad.push(`group ${stored.group}`);
+    if (bad.length) throw new Error(`${bad.join("; ")}\n${stored.xml.slice(0, 1200)}`);
+    const others = (h?.list ?? []).filter((t) => t.tag === oblig2 && t.aumid !== accepted).map((t) => t.aumid);
+    return `${accepted}: tag ${stored.tag}, group ${stored.group}; buttons ${names.join("/")} (protocol, pantheon://); text "${texts.find((t) => t.includes(LITERAL))}"${others.length ? `; ALSO under ${others.join(", ")}` : ""}`;
+  }, noToast);
+
+  await step("Done on the stored toast, activated as Windows activates it (the shell opening its pantheon:// URI), answers the decision on the relay", async () => {
+    if (!stored) throw new Error("no stored toast (FAIL above)");
+    const done = [...stored.xml.matchAll(/<action\b([^>]*)\/?>/g)].map((m) => Object.fromEntries([...m[1].matchAll(/([\w:]+)="([^"]*)"/g)].map((a) => [a[1], xmlUn(a[2])]))).find((a) => a.content === "Done")?.arguments;
+    if (!done) throw new Error("the stored toast has no Done button");
+    const from = fileSize(uriLog);
+    const r = ps(`try { Start-Process -FilePath $env:PD_URI -ErrorAction Stop; Write-Output 'Start-Process' } catch { Write-Output ('Start-Process failed: ' + $_.Exception.Message); & explorer.exe $env:PD_URI; Write-Output 'explorer.exe' }`, { env: { ...member.env, PD_URI: done } });
+    const res = await waitFor(() => /explain --queued exited (\d+)/.exec(since(uriLog, from)), 60_000, 500);
+    if (!res || res[1] !== "0") throw new Error(`uri.log: ${tail(since(uriLog, from), 4) || "(nothing)"}\n${r.out.slice(0, 400)}`);
+    const ans = await waitFor(() => answerOnRelay(act2), 30_000, 2000);
+    if (!ans) throw new Error(`no ANSWER to ${act2} from ${memberId} on the relay; uri.log: ${tail(since(uriLog, from), 4)}`);
+    const via = r.out.trim().split("\n").pop();
+    return `${done.replace(/([?&](sig|key|k|s)=)[^&]+/g, "$1…").slice(0, 70)}… via ${via}; uri.log "${tail(since(uriLog, from), 3).split("\n").map((l) => l.trim().slice(25)).join(" | ").slice(0, 160)}"; ANSWER ${ans.id}`;
+  }, noToast);
 
   await boardStop("Windows", st, noTeam);
 
@@ -1008,6 +1235,139 @@ GLib.MainLoop().run()
     if (st2 === "active") throw new Error("still active");
     return `unit removed, ${st2 || "inactive"}`;
   }, noSd);
+
+  await dunstChecks();
+}
+
+/**
+ * The same alert through a real notification server: dunst, drawing on a
+ * virtual X screen (Xvfb), owning org.freedesktop.Notifications on its own
+ * session bus. Done is chosen through dunst's own context menu (its dmenu is a
+ * script here that picks the Done line), so ActionInvoked comes from dunst.
+ */
+async function dunstChecks() {
+  const dir = mkdtempSync(join(tmpdir(), "pd-dunst-"));
+  const busPath = join(dir, "bus"), busAddr = `unix:path=${busPath}`;
+  const menuIn = join(dir, "menu.txt"), rc = join(dir, "dunstrc"), pick = join(dir, "pick-done.sh");
+  const LITERAL = "<b>&</b>";
+  let display = "", dOut = "", version = "";
+  const env = () => ({ ...process.env, DISPLAY: display, DBUS_SESSION_BUS_ADDRESS: busAddr });
+  const ctl = (args) => run("dunstctl", args, { env: env(), timeout: 30_000 });
+  const keep = () => { writeFileSync(join(ART, "dunst.txt"), strip(dOut)); try { cpSync(menuIn, join(ART, "dunst-menu.txt")); } catch { /* none */ } };
+
+  const up = await step("a real notification server: dunst on a virtual X screen (Xvfb), owning org.freedesktop.Notifications on its own session bus", async () => {
+    const missing = ["dunst", "dunstctl", "Xvfb", "dbus-daemon", "dbus-send"].filter((c) => spawnSync("sh", ["-c", `command -v ${c}`]).status !== 0);
+    if (missing.length) return NOT_RUN(`${missing.join(", ")} not installed on this runner (the workflow installs dunst and xvfb with apt)`);
+    version = run("dunst", ["-v"]).out.trim().split("\n")[0];
+    let n = 99;
+    while (existsSync(`/tmp/.X11-unix/X${n}`) || existsSync(`/tmp/.X${n}-lock`)) n++;
+    display = `:${n}`;
+    const x = spawn("Xvfb", [display, "-screen", "0", "1280x800x24", "-nolisten", "tcp"], { stdio: ["ignore", "pipe", "pipe"] });
+    let xOut = ""; x.stdout.on("data", (b) => { xOut += b; }); x.stderr.on("data", (b) => { xOut += b; });
+    cleanups.push(() => killTree(x));
+    if (!(await waitFor(() => existsSync(`/tmp/.X11-unix/X${n}`), 20_000, 200))) throw new Error(`Xvfb ${display} did not start: ${xOut.slice(-300)}`);
+    const daemon = spawn("dbus-daemon", ["--session", "--nofork", `--address=${busAddr}`], { stdio: ["ignore", "pipe", "pipe"] });
+    cleanups.push(() => killTree(daemon));
+    if (!(await waitFor(() => existsSync(busPath), 15_000, 200))) throw new Error("dbus-daemon did not start");
+    writeFileSync(pick, `#!/bin/sh\n# dunst's dmenu: what it offers is kept, and the Done line is chosen.\ncat > "${menuIn}"\ngrep -m1 'Done' "${menuIn}"\n`, { mode: 0o755 });
+    writeFileSync(rc, `[global]
+    monitor = 0
+    follow = none
+    markup = full
+    format = "<b>%s</b>\\n%b"
+    dmenu = ${pick}
+    history_length = 50
+    sticky_history = yes
+    show_indicators = yes
+[urgency_low]
+    timeout = 0
+[urgency_normal]
+    timeout = 0
+[urgency_critical]
+    timeout = 0
+`);
+    const d = spawn("dunst", ["-config", rc, "-print"], { env: env(), stdio: ["ignore", "pipe", "pipe"] });
+    d.stdout.on("data", (b) => { dOut += b; }); d.stderr.on("data", (b) => { dOut += b; });
+    cleanups.push(() => { killTree(d); keep(); });
+    const info = await waitFor(() => {
+      const r = run("dbus-send", ["--session", "--print-reply", "--dest=org.freedesktop.Notifications", "/org/freedesktop/Notifications", "org.freedesktop.Notifications.GetServerInformation"], { env: env(), timeout: 5000 });
+      return r.code === 0 && /dunst/i.test(r.out) ? r.out : null;
+    }, 20_000, 500);
+    if (!info) throw new Error(`dunst does not answer on ${busAddr}:\n${tail(strip(dOut), 10)}`);
+    const caps = run("dbus-send", ["--session", "--print-reply", "--dest=org.freedesktop.Notifications", "/org/freedesktop/Notifications", "org.freedesktop.Notifications.GetCapabilities"], { env: env() }).out;
+    const strs = [...info.matchAll(/string "([^"]*)"/g)].map((m) => m[1]);
+    return `${version}; GetServerInformation ${strs.join(" / ")}; capabilities ${[...caps.matchAll(/string "([^"]*)"/g)].map((m) => m[1]).join(", ")}; DISPLAY ${display}`;
+  }, noTeam);
+  const noDunst = noTeam ?? (up ? null : up === null ? "dunst or Xvfb is not available here (NOT RUN above)" : "dunst did not start (FAIL above)");
+
+  let nOut = "", notifier = null, act = "";
+  const online = await step("pantheon notifier runs against the local relay, with dunst as the desktop's notification server", async () => {
+    const nEnv = { ...member.env, DBUS_SESSION_BUS_ADDRESS: busAddr, DISPLAY: display, BROWSER: "true" };
+    notifier = spawn(member.bin, ["notifier"], { env: nEnv, cwd: member.cwd, stdio: ["ignore", "pipe", "pipe"] });
+    notifier.stdout.on("data", (b) => { nOut += b; }); notifier.stderr.on("data", (b) => { nOut += b; });
+    cleanups.push(() => { killTree(notifier); writeFileSync(join(ART, "notifier-dunst.txt"), strip(nOut)); });
+    const said = await waitFor(() => /alerts: D-Bus notifications[^\n]*/.exec(strip(nOut))?.[0], 45_000, 250);
+    if (!said || !/notifier online as/.test(nOut)) throw new Error(`not online with D-Bus alerts 45 s later:\n${tail(strip(nOut), 10)}`);
+    if (!/with actions/.test(said) || !/dunst/i.test(said)) throw new Error(said);
+    return said.trim();
+  }, noDunst);
+  const noNotifier = noDunst ?? (online ? null : "the notifier did not start against dunst (FAIL above)");
+
+  const displayed = await step("the teammate's HUMAN_REQUIRED (text holding <b>&</b>) is on dunst's screen", async () => {
+    act = await askForDecision(`Ship the ${LITERAL} banner today`, "release-banner");
+    const n = await waitFor(() => { const c = ctl(["count", "displayed"]); return c.code === 0 && Number(c.out.trim()) >= 1 ? c.out.trim() : null; }, 90_000, 500);
+    if (!n) throw new Error(`dunstctl count displayed is ${ctl(["count", "displayed"]).out.trim()} 90 s after ${act}\nnotifier:\n${tail(strip(nOut), 8)}\ndunst:\n${tail(strip(dOut), 20)}`);
+    return `${n} displayed; act ${act}`;
+  }, noNotifier);
+  const noShown = displayed ? null : noNotifier ?? "nothing reached dunst (FAIL above)";
+
+  let menu = "";
+  await step("Done chosen in dunst's own context menu (dunstctl context): dunst offers Done and Open board, and its ActionInvoked answers on the relay", async () => {
+    const n0 = strip(nOut).length;
+    const c = ctl(["context"]);
+    menu = await waitFor(() => readText(menuIn), 20_000, 250);
+    if (!menu) throw new Error(`dunst ran no menu (dunstctl context exit ${c.code}: ${c.out.trim().slice(0, 200)})\n${tail(strip(dOut), 10)}`);
+    const offers = menu.split("\n").filter(Boolean);
+    if (!offers.some((l) => /Done/.test(l)) || !offers.some((l) => /Open board/.test(l))) throw new Error(`dunst's menu: ${JSON.stringify(offers)}`);
+    const done = await waitFor(() => /alerts: Done (→|was not sent)[^\n]*/.exec(strip(nOut).slice(n0))?.[0], 60_000, 250);
+    if (!done || /not sent/.test(done)) throw new Error(`notifier: ${done ?? tail(strip(nOut).slice(n0), 8)}\ndunst's menu: ${JSON.stringify(offers)}`);
+    const ans = await waitFor(() => answerOnRelay(act), 30_000, 2000);
+    if (!ans) throw new Error(`no ANSWER to ${act} from ${memberId} on the relay; notifier said "${done}"`);
+    return `menu ${JSON.stringify(offers)}; notifier "${done.trim()}"; ANSWER ${ans.id}`;
+  }, noShown);
+
+  await step("dunstctl history: the alert with the right summary and body, and <b>&</b> drawn as text, not markup", async () => {
+    // A notification enters dunst's history when it closes (Done closes it).
+    const get = () => {
+      const r = ctl(["history"]);
+      let j = null; try { j = JSON.parse(r.out); } catch { return { r, list: null }; }
+      const list = (j?.data?.[0] ?? []).map((e) => Object.fromEntries(Object.entries(e).map(([k, v]) => [k, v?.data ?? v])));
+      return { r, list };
+    };
+    let h = null;
+    const n = await waitFor(() => { h = get(); return h.list?.find((e) => /Ship the/.test(e.body ?? "")) ?? null; }, 20_000, 500);
+    writeFileSync(join(ART, "dunst-history.json"), h?.r.out ?? "");
+    if (!n) {
+      const disp = ctl(["count", "displayed"]).out.trim();
+      throw new Error(`not in dunstctl history (${h?.list ? `${h.list.length} entries: ${JSON.stringify(h.list.map((e) => e.summary))}` : `unreadable: ${h?.r.out.slice(0, 300)}`}); still displayed: ${disp}\ndunst -print:\n${tail(strip(dOut), 30)}`);
+    }
+    // What dunst draws: its message (the format applied) read as Pango markup, the way dunst renders it.
+    const pango = (s) => spawnSync("python3", ["-c", "import sys, gi\ngi.require_version('Pango', '1.0')\nfrom gi.repository import Pango\nok, attrs, text, accel = Pango.parse_markup(sys.stdin.read(), -1, '\\0')\nsys.stdout.write(text)"], { input: s, encoding: "utf8" });
+    const drawnFrom = n.message ?? n.body;
+    const p = pango(drawnFrom);
+    const shown = p.status === 0 ? p.stdout : null;
+    const bad = [];
+    if (n.summary !== "Needs your decision") bad.push(`summary "${n.summary}"`);
+    if (!/Ship the/.test(n.body) || !/banner today/.test(n.body)) bad.push(`body ${JSON.stringify(n.body)}`);
+    if (shown === null) bad.push(`dunst could not read it as markup (${strip(p.stderr).trim().split("\n").pop()}): ${JSON.stringify(drawnFrom)}`);
+    else if (!shown.includes(LITERAL)) bad.push(`drawn as ${JSON.stringify(shown)} (not the literal ${LITERAL})`);
+    if (bad.length) throw new Error(`${bad.join("; ")}\nhistory entry: ${JSON.stringify(n).slice(0, 800)}`);
+    const keys = Object.keys(n).join(",");
+    return `summary "${n.summary}"; body ${JSON.stringify(n.body).slice(0, 160)}; drawn: ${JSON.stringify(shown.replace(/\n/g, " / ")).slice(0, 200)}; appname ${n.appname}${n.default_action_name !== undefined ? `, default action "${n.default_action_name}"` : ""} (history fields: ${keys})`;
+  }, noShown);
+
+  if (notifier) { killTree(notifier); await sleep(300); }
+  keep();
 }
 
 /* ================================================================== macOS */
