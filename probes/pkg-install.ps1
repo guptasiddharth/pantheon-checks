@@ -9,7 +9,7 @@
 #   -Scenario legacy    0.33.0 installed normally (outside), then the new installer
 #                       inside: it must update that install where it is
 #
-# The new build comes from this repo's release test-0.33.1-1 (env PANTHEON_TEST_RELEASE).
+# The new build comes from this repo's release test-0.33.1-2 (env PANTHEON_TEST_RELEASE).
 param([string]$Scenario = 'fresh')
 $ErrorActionPreference = 'Continue'
 . (Join-Path $PSScriptRoot 'lib-msix.ps1')
@@ -23,10 +23,10 @@ function Check([bool]$Ok, [string]$Name, [string]$Detail = '') {
 }
 function Show([string]$Label, [string]$File) { Write-Host "  --    $Label"; if (Test-Path $File) { Get-Content $File | Select-Object -Last 40 | ForEach-Object { Write-Host "        $_" } } }
 
-$rel = if ($env:PANTHEON_TEST_RELEASE) { $env:PANTHEON_TEST_RELEASE } else { 'https://github.com/guptasiddharth/pantheon-checks/releases/download/test-0.33.1-1' }
-$newVersion = '0.33.1-test.1'
-Invoke-WebRequest "$rel/join-pantheon-cli-$newVersion.tgz" -OutFile "$W\pantheon.tgz" -UseBasicParsing
+$rel = if ($env:PANTHEON_TEST_RELEASE) { $env:PANTHEON_TEST_RELEASE } else { 'https://github.com/guptasiddharth/pantheon-checks/releases/download/test-0.33.1-2' }
 Invoke-WebRequest "$rel/install-new.ps1" -OutFile "$W\install-new.ps1" -UseBasicParsing
+$newVersion = ([regex]::Match((Get-Content -Raw "$W\install-new.ps1"), "PantheonVersion = '([^']+)'")).Groups[1].Value
+Invoke-WebRequest "$rel/join-pantheon-cli-$newVersion.tgz" -OutFile "$W\pantheon.tgz" -UseBasicParsing
 Invoke-WebRequest 'https://relay.joinpantheon.network/install.ps1' -OutFile "$W\install-old.ps1" -UseBasicParsing
 $oldVersion = ([regex]::Match((Get-Content -Raw "$W\install-old.ps1"), "PantheonVersion = '([^']+)'")).Groups[1].Value
 Write-Host "pkg-install $Scenario - $([Environment]::OSVersion.VersionString) $env:PROCESSOR_ARCHITECTURE; new $newVersion, old $oldVersion`n"
@@ -110,7 +110,7 @@ switch ($Scenario) {
   'fresh' {
     Check (Install-Inside 'new') 'the new installer ran inside the package'
     $log = Get-Content -Raw "$W\inner-new.txt"
-    Check ($log -match 'Pantheon 0\.33\.1-test\.1 is installed') 'it says it installed' ''
+    Check ($log -match "Pantheon $([regex]::Escape($newVersion)) is installed") 'it says it installed' ''
     Check (Test-Path (Join-Path $curRoot 'runtime\node\node.exe')) "node.exe is in $curRoot for real (seen from outside)"
     Check (-not (Test-Path (Join-Path $priv 'Pantheon'))) 'nothing of Pantheon went to the package''s private copy'
     Check (-not (Test-Path $oldRoot)) "no $oldRoot was made"

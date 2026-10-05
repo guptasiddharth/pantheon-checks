@@ -7,7 +7,7 @@ on:
     inputs:
       release:
         description: "release URL holding join-pantheon-cli-<version>.tgz and install-new.ps1"
-        default: "https://github.com/guptasiddharth/pantheon-checks/releases/download/test-0.33.1-1"
+        default: "https://github.com/guptasiddharth/pantheon-checks/releases/download/test-0.33.1-2"
         required: false
 
 permissions:
