@@ -1306,10 +1306,8 @@ async function dunstChecks() {
     notifier = spawn(member.bin, ["notifier"], { env: nEnv, cwd: member.cwd, stdio: ["ignore", "pipe", "pipe"] });
     notifier.stdout.on("data", (b) => { nOut += b; }); notifier.stderr.on("data", (b) => { nOut += b; });
     cleanups.push(() => { killTree(notifier); writeFileSync(join(ART, "notifier-dunst.txt"), strip(nOut)); });
-    const said = await waitFor(() => /alerts: D-Bus notifications[^\n]*/.exec(strip(nOut))?.[0], 45_000, 250);
-    if (!said || !/notifier online as/.test(nOut)) throw new Error(`not online with D-Bus alerts 45 s later:\n${tail(strip(nOut), 10)}`);
-    if (!/with actions/.test(said) || !/dunst/i.test(said)) throw new Error(said);
-    return said.trim();
+    if (!(await waitFor(() => /notifier online as/.test(nOut), 45_000, 250))) throw new Error(`not online 45 s later:\n${tail(strip(nOut), 10)}`);
+    return strip(/notifier online as \S+/.exec(nOut)?.[0] ?? "");
   }, noDunst);
   const noNotifier = noDunst ?? (online ? null : "the notifier did not start against dunst (FAIL above)");
 
@@ -1317,7 +1315,10 @@ async function dunstChecks() {
     act = await askForDecision(`Ship the ${LITERAL} banner today`, "release-banner");
     const n = await waitFor(() => { const c = ctl(["count", "displayed"]); return c.code === 0 && Number(c.out.trim()) >= 1 ? c.out.trim() : null; }, 90_000, 500);
     if (!n) throw new Error(`dunstctl count displayed is ${ctl(["count", "displayed"]).out.trim()} 90 s after ${act}\nnotifier:\n${tail(strip(nOut), 8)}\ndunst:\n${tail(strip(dOut), 20)}`);
-    return `${n} displayed; act ${act}`;
+    // The notifier says which server it found, and whether it offers buttons, when it first shows an alert.
+    const said = strip(/alerts: D-Bus notifications[^\n]*/.exec(strip(nOut))?.[0] ?? "");
+    if (!/with actions/.test(said) || !/dunst/i.test(said)) throw new Error(`notifier: ${said || tail(strip(nOut), 6)}`);
+    return `${n} displayed; act ${act}; notifier: ${said.trim()}`;
   }, noNotifier);
   const noShown = displayed ? null : noNotifier ?? "nothing reached dunst (FAIL above)";
 
