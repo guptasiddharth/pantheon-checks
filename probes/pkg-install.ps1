@@ -128,23 +128,29 @@ switch ($Scenario) {
   }
   'tany' {
     Check (Install-Inside 'old') "the $oldVersion installer ran inside the package (as on the machine of 5 Oct)"
-    Check ((-not (Test-Path (Join-Path $oldRoot 'runtime\node\node.exe'))) -and (Test-Path (Join-Path $priv 'Pantheon\runtime\node\node.exe'))) "$oldVersion is there only inside the app"
+    Check ((-not (Test-Path (Join-Path $oldRoot 'runtime\node\node.exe'))) -and (Test-Path (Join-Path $priv 'Pantheon\runtime\node\node.exe'))) "$oldVersion's Node is there only inside the app"
     Check (Invoke-InPackage $pfn "$W\diag.ps1" '' "$W\inner-diag.txt" 60) 'inside, the facts the installer decides by'
     Show 'those facts' "$W\inner-diag.txt"
-    # As on that machine: the alerts had been set up (pantheon service install notifier), so a definition is there.
+    # That machine also had its identity and its alerts set up. The identity: a team made
+    # with the new CLI from a scratch folder (its config is what a real machine keeps).
+    # The alerts: the definition pantheon service install leaves, as Node writes it.
+    npm i --prefix "$W\scratchcli" "$W\pantheon.tgz" --no-audit --no-fund --loglevel=error | Out-Null
+    $sc = "$W\scratchcli\node_modules\@join-pantheon\cli\dist\cli.js"
+    Start-Process -FilePath node -ArgumentList @($sc, 'relay', '--port', '8799', '--data', "$W\relay") -WindowStyle Hidden -RedirectStandardOutput "$W\relay.out" -RedirectStandardError "$W\relay.err" | Out-Null
+    for ($i = 0; $i -lt 60; $i++) { try { if ((Invoke-WebRequest 'http://127.0.0.1:8799/health' -UseBasicParsing -TimeoutSec 2).StatusCode -eq 200) { break } } catch { }; Start-Sleep 1 }
+    $o = (& node $sc start --relay ws://127.0.0.1:8799 --space pk --yes --name Pk --title QA --decides none --no-worker --no-hook --no-notifications --no-menubar 2>&1) -join "`n"
+    Check (Test-Path (Join-Path $curRoot 'config.json')) 'the identity is set up' (($o -split "`n" | Select-Object -Last 4) -join ' | ')
     New-Item -ItemType Directory -Force (Join-Path $curRoot 'host') | Out-Null
-    Set-Content -Encoding UTF8 (Join-Path $curRoot 'host\notifier.json') (@{ kind = 'notifier'; cwd = $prof; args = @() } | ConvertTo-Json)
+    [IO.File]::WriteAllText((Join-Path $curRoot 'host\notifier.json'), (@{ kind = 'notifier'; cwd = $prof; args = @() } | ConvertTo-Json -Compress))
     Check (Install-Inside 'new') 'the new installer ran inside the package'
     $log = Get-Content -Raw "$W\inner-new.txt"
     Check ($log -match 'exists only inside PantheonProbe') 'it says the old install was only inside the app' ''
-    Check ($log -match "Pantheon's background notifier (runs on this install|did not start on this install)") 'it tried to start the background notifier that was set up, on the new install' ''
-    # Then with a member (the old one's config is the identity a real machine keeps): service start brings the host up.
-    Check (New-Member (Join-Path $curRoot 'bin\pantheon.cmd')) 'a member is set up'
-    $o2 = (& cmd.exe /d /c "`"$(Join-Path $curRoot 'bin\pantheon.cmd')`" service start notifier" 2>&1) -join "`n"
-    Write-Host "  --    pantheon service start notifier`n        $($o2 -replace "`n", "`n        ")"
+    Check ($log -match "Pantheon's background notifier runs on this install") 'it started the background notifier that was set up, on the new install' ''
     $state = Join-Path $curRoot 'host\state.json'
     $up = $false; for ($i = 0; $i -lt 30 -and -not $up; $i++) { if (Test-Path $state) { try { $up = ([DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() - [double](Get-Content -Raw $state | ConvertFrom-Json).beat) -lt 30000 } catch { } }; if (-not $up) { Start-Sleep 1 } }
-    Check $up 'the background host is up without anyone running service install again' ''
+    Check $up 'the background host is up (Task Scheduler, outside the app) without anyone running service install again' ''
+    $launchTxt = Join-Path $curRoot 'host\launch.txt'
+    Check ((Test-Path $launchTxt) -and ((Get-Content $launchTxt | Select-Object -First 1) -ieq (Join-Path $curRoot 'runtime\node\node.exe'))) 'the task starts the Node in the profile folder' ((Get-Content $launchTxt -ErrorAction SilentlyContinue) -join ' | ')
     Check (Test-Path (Join-Path $curRoot 'runtime\node\node.exe')) "node.exe is in $curRoot for real"
     $v = & $cliVersion (Join-Path $curRoot 'bin\pantheon.cmd')
     Check ($v -eq $newVersion) "the launcher runs from outside: $v"
