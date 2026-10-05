@@ -38,6 +38,7 @@ $bmp = New-Object System.Drawing.Bitmap 150, 150; $bmp.Save("$P\pkg\logo.png", [
 </Package>
 '@ | Set-Content -Encoding UTF8 "$P\pkg\AppxManifest.xml"
 & $makeappx pack /o /d "$P\pkg" /p "$P\probe.msix" | Select-Object -Last 1
+Import-Module PKI -ErrorAction SilentlyContinue; Import-Module Appx -ErrorAction SilentlyContinue
 $cert = New-SelfSignedCertificate -Type Custom -Subject 'CN=PantheonProbe' -KeyUsage DigitalSignature -CertStoreLocation Cert:\CurrentUser\My -TextExtension @('2.5.29.37={text}1.3.6.1.5.5.7.3.3', '2.5.29.19={text}')
 $pw = ConvertTo-SecureString -String 'probe' -Force -AsPlainText
 Export-PfxCertificate -Cert $cert -FilePath "$P\probe.pfx" -Password $pw | Out-Null
