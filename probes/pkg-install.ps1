@@ -125,6 +125,34 @@ switch ($Scenario) {
     Check (New-Member (Join-Path $curRoot 'bin\pantheon.cmd')) 'a member is set up (a team on a relay on this machine)'
     $h = Test-HostComes (Join-Path $curRoot 'bin\pantheon.cmd')
     Check ($h -notlike 'NOT UP*') "the background host comes up, started by Task Scheduler: $h" $h
+    $L = Join-Path $curRoot 'bin\pantheon.cmd'
+    $g = (& cmd.exe /d /c "`"$L`" upgrade 0.33.0" 2>&1) -join ' '
+    Check ($g -match 'predates Pantheon in your profile folder') 'pantheon upgrade 0.33.0 is refused here (it could not find itself again)' $g
+    $lv = (& cmd.exe /d /c "`"$L`" leave pk --yes" 2>&1) -join ' '
+    Check ((& $cliVersion $L) -eq $newVersion) 'after pantheon leave <team>, the pantheon command still runs' $lv
+    $u = (& cmd.exe /d /c "`"$L`" uninstall --yes" 2>&1) -join "`n"
+    Write-Host "  --    pantheon uninstall --yes`n        $(($u -split "`n" | Select-Object -Last 12) -join "`n        ")"
+    $gone = $false; for ($i = 0; $i -lt 60 -and -not $gone; $i++) { $gone = -not (Test-Path (Join-Path $curRoot 'runtime')); if (-not $gone) { Start-Sleep 1 } }
+    Check $gone "the runtime in $curRoot is gone a few seconds after uninstall exits"
+    Check (Test-Path (Join-Path $curRoot 'config.json')) 'the identity is kept (config.json), so a reinstall is back in its teams'
+    Check (-not (schtasks /query /fo csv 2>$null | Select-String 'Pantheon-S-')) 'the logon task is gone'
+    $p2 = & $userPath
+    Check (-not (($p2 -split ';') | Where-Object { $_ -ieq (Join-Path $curRoot 'bin') })) 'its PATH entry is gone' "$p2"
+    # Reinstall inside the app: back as the same member, agents rewired, no start/join.
+    Check (Install-Inside 'new') 'the new installer ran again inside the package'
+    $re = Get-Content -Raw "$W\inner-new.txt"
+    Check ($re -match 'still signed in as') 'it says you are still signed in, nothing to rejoin' ''
+    Check ($re -match 'Your coding agents now use this install') 'it pointed the coding agents at the install' ''
+  }
+  'outside' {
+    # Not inside an app: AppData, exactly as 0.33.0 put it (AppData\Local never roams).
+    $o = (& powershell.exe -NoProfile -Command "`$env:PANTHEON_INSTALL_SPEC='$W\pantheon.tgz'; Get-Content -Raw '$W\install-new.ps1' | iex" 2>&1) -join "`n"
+    Write-Host "  --    the new installer, outside any package`n        $(($o -split "`n" | Select-Object -Last 8) -join "`n        ")"
+    Check (Test-Path (Join-Path $oldRoot 'runtime\node\node.exe')) "it installed into $oldRoot"
+    Check (-not (Test-Path (Join-Path $curRoot 'runtime'))) 'not into the profile folder'
+    Check ($o -notmatch 'from outside') 'no PATH task outside a package' ''
+    $v = & $cliVersion (Join-Path $oldRoot 'bin\pantheon.cmd')
+    Check ($v -eq $newVersion) "its launcher runs: $v"
   }
   'tany' {
     Check (Install-Inside 'old') "the $oldVersion installer ran inside the package (as on the machine of 5 Oct)"
@@ -146,6 +174,8 @@ switch ($Scenario) {
     $log = Get-Content -Raw "$W\inner-new.txt"
     Check ($log -match 'exists only inside\s+PantheonProbe') 'it says the old install was only inside the app' ''
     Check ($log -match "Pantheon's background notifier runs on this install") 'it started the background notifier that was set up, on the new install' ''
+    Check ($log -match 'Your coding agents now use this install') 'it pointed the coding agents at the new install (they named the app-only one)' ''
+    Check ($log -match 'still signed in as Pk') 'it says you are still signed in, nothing to rejoin' ''
     $state = Join-Path $curRoot 'host\state.json'
     $up = $false; for ($i = 0; $i -lt 30 -and -not $up; $i++) { if (Test-Path $state) { try { $up = ([DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() - [double](Get-Content -Raw $state | ConvertFrom-Json).beat) -lt 30000 } catch { } }; if (-not $up) { Start-Sleep 1 } }
     Check $up 'the background host is up (Task Scheduler, outside the app) without anyone running service install again' ''
