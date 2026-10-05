@@ -60,8 +60,8 @@ $pkgFn = @'
 Add-Type -Namespace PP -Name K -MemberDefinition '[DllImport("kernel32.dll", CharSet=CharSet.Unicode)] public static extern int GetCurrentPackageFullName(ref int len, System.Text.StringBuilder name);'
 function Pkg { $l = 0; $r = [PP.K]::GetCurrentPackageFullName([ref]$l, $null); if ($r -eq 15700) { return 'none' }; $sb = New-Object System.Text.StringBuilder ($l); [void][PP.K]::GetCurrentPackageFullName([ref]$l, $sb); $sb.ToString() }
 '@
-Set-Content "$P\child.ps1" ($pkgFn + @'
-param($mode)
+Set-Content "$P\child.ps1" ("param(`$mode)`r`n" + $pkgFn + @'
+New-Item -ItemType Directory -Force "$env:LOCALAPPDATA\PProbeMk-$mode" | Out-Null
 $o = "C:\pprobe\child-$mode.txt"
 "package=$(Pkg)" | Set-Content $o
 "sees-inside-new=$(Test-Path "$env:LOCALAPPDATA\PProbe\new.txt")" | Add-Content $o
@@ -98,6 +98,7 @@ schtasks /create /tn PProbeTask /tr 'powershell.exe -NoProfile -ExecutionPolicy 
 schtasks /run /tn PProbeTask | Out-Null
 W "task-created=$LASTEXITCODE"
 Start-Sleep -Seconds 12
+foreach ($m in 'startprocess', 'wmi', 'task') { if (Test-Path "$env:LOCALAPPDATA\PProbeMk-$m") { Set-Content "$env:LOCALAPPDATA\PProbeMk-$m\from-inside.txt" 'inside' }; W "inside-sees-mk-$m=$(Test-Path "$env:LOCALAPPDATA\PProbeMk-$m")" }
 W 'done'
 '@)
 
@@ -120,6 +121,7 @@ Say "PProbeReal\sub\added.txt                : $(Test-Path "$env:LOCALAPPDATA\PP
 Say "HKCU\Environment PPROBE                 : $((Get-ItemProperty HKCU:\Environment -Name PPROBE -ErrorAction SilentlyContinue).PPROBE)"
 Say "HKCU\Software\Classes\pprobe            : $(Test-Path 'HKCU:\Software\Classes\pprobe')"
 Say "HKCU\Software\PProbe                    : $(Test-Path 'HKCU:\Software\PProbe')"
+foreach ($m in 'startprocess', 'wmi', 'task') { Say "PProbeMk-$m (made by that child) / from-inside.txt : $(Test-Path "$env:LOCALAPPDATA\PProbeMk-$m") / $(Test-Path "$env:LOCALAPPDATA\PProbeMk-$m\from-inside.txt")" }
 Say "task registered (schtasks /query)       : $(schtasks /query /tn PProbeTask 2>$null | Select-String PProbeTask | ForEach-Object { 'yes' })"
 Say "`n===== the package's private copies ($lc)"
 Get-ChildItem -Recurse -Force $lc -ErrorAction SilentlyContinue | Where-Object { -not $_.PSIsContainer } | ForEach-Object { $_.FullName.Substring($lc.Length) }
