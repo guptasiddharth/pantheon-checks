@@ -15,28 +15,31 @@ Write-Output ('PS ' + $PSVersionTable.PSVersion + ' / ' + [Environment]::OSVersi
 Write-Output ('ToastEnabled = [' + (Get-ItemProperty 'HKCU:\Software\Microsoft\Windows\CurrentVersion\PushNotifications' -ErrorAction SilentlyContinue).ToastEnabled + ']')
 [void][Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime]
 [void][Windows.Data.Xml.Dom.XmlDocument, Windows.Data.Xml.Dom.XmlDocument, ContentType = WindowsRuntime]
-function Probe($label) {
-  Write-Output ('---- ' + $label)
-  foreach ($id in 'JoinPantheon.Pantheon', '{1AC14E77-02E7-4E5D-B744-2EB1AE5198B7}\WindowsPowerShell\v1.0\powershell.exe', 'Microsoft.Windows.Explorer') {
+function Read($label) {
+  Write-Output ('---- ' + $label + ' (ToastEnabled [' + (Get-ItemProperty 'HKCU:\Software\Microsoft\Windows\CurrentVersion\PushNotifications' -ErrorAction SilentlyContinue).ToastEnabled + '])')
+  foreach ($id in $ids) {
     $n = [Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier($id)
-    $p = $n.Setting
-    Write-Output ($id + ': .Setting -> [' + [string]$p + '] null=' + ($null -eq $p))
-    try { $g = $n.get_Setting(); Write-Output ('   get_Setting() -> [' + [string]$g + '] int ' + [int]$g + ' ' + $g.GetType().FullName) } catch { Write-Output ('   get_Setting() THREW ' + $_.Exception.GetType().FullName + ': ' + $_.Exception.Message + ' HResult 0x' + $_.Exception.HResult.ToString('X8')) }
-    try {
-      $doc = [Windows.Data.Xml.Dom.XmlDocument]::new()
-      $doc.LoadXml('<toast><visual><binding template="ToastGeneric"><text>probe</text><text>' + $label + '</text></binding></visual><actions><action content="Done" activationType="protocol" arguments="pantheon://probe"/></actions></toast>')
-      $t = [Windows.UI.Notifications.ToastNotification]::new($doc); $t.Tag = 'pdprobe'; $t.Group = 'pdcheck'
-      $n.Show($t); Start-Sleep -Milliseconds 800
-      $h = @([Windows.UI.Notifications.ToastNotificationManager]::History.GetHistory($id))
-      $mine = @($h | Where-Object { $_.Tag -eq 'pdprobe' })
-      Write-Output ('   Show() ok; history ' + $h.Count + ', ours ' + $mine.Count + $(if ($mine.Count) { ' xml ' + $mine[0].Content.GetXml().Length + ' chars' } else { '' }))
-      try { [Windows.UI.Notifications.ToastNotificationManager]::History.Remove('pdprobe', 'pdcheck', $id) } catch { }
-    } catch { Write-Output ('   Show() THREW ' + $_.Exception.Message + ' 0x' + $_.Exception.HResult.ToString('X8')) }
+    try { $g = $n.get_Setting(); Write-Output ('   ' + $id + ': ' + [string]$g) } catch { Write-Output ('   ' + $id + ': THREW ' + $_.Exception.InnerException.Message) }
   }
 }
-Probe 'as found'
+function Show($id, $tag) {
+  $doc = [Windows.Data.Xml.Dom.XmlDocument]::new()
+  $doc.LoadXml('<toast><visual><binding template="ToastGeneric"><text>probe</text></binding></visual></toast>')
+  $t = [Windows.UI.Notifications.ToastNotification]::new($doc); $t.Tag = $tag; $t.Group = 'pdcheck'
+  try { [Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier($id).Show($t); Start-Sleep -Milliseconds 800
+    $c = @([Windows.UI.Notifications.ToastNotificationManager]::History.GetHistory($id) | Where-Object { $_.Tag -eq $tag }).Count
+    Write-Output ('   Show under ' + $id + ': in history ' + $c) } catch { Write-Output ('   Show under ' + $id + ' THREW ' + $_.Exception.Message) }
+}
+$ids = 'JoinPantheon.Pantheon', '{1AC14E77-02E7-4E5D-B744-2EB1AE5198B7}\WindowsPowerShell\v1.0\powershell.exe', 'Microsoft.Windows.Explorer'
+Read '1 as found'
+Show $ids[1] 'p1'
+Read '2 after one toast under PowerShell'
+Show $ids[0] 'p2'
+Read '3 after one toast under JoinPantheon.Pantheon'
 New-ItemProperty -LiteralPath 'HKCU:\Software\Microsoft\Windows\CurrentVersion\PushNotifications' -Name ToastEnabled -Value 1 -PropertyType DWord -Force | Out-Null
-Probe 'ToastEnabled=1'
+Read '4 ToastEnabled=1'
+Write-Output ('PushNotifications values: ' + ((Get-ItemProperty 'HKCU:\Software\Microsoft\Windows\CurrentVersion\PushNotifications' | Get-Member -MemberType NoteProperty | Where-Object { $_.Name -notlike 'PS*' } | ForEach-Object { $_.Name }) -join ', '))
+Write-Output ('Notifications\Settings subkeys: ' + ((Get-ChildItem 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Notifications\Settings' -ErrorAction SilentlyContinue | ForEach-Object { $_.PSChildName }) -join ', '))
 `);
 const r = spawnSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", f], { encoding: "utf8", timeout: 120000 });
 console.log(r.status, `${r.stdout}${r.stderr}`);
