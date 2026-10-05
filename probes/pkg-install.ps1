@@ -130,6 +130,10 @@ switch ($Scenario) {
     Check ($g -match 'predates Pantheon in your profile folder') 'pantheon upgrade 0.33.0 is refused here (it could not find itself again)' $g
     $lv = (& cmd.exe /d /c "`"$L`" leave pk --yes" 2>&1) -join ' '
     Check ((& $cliVersion $L) -eq $newVersion) 'after pantheon leave <team>, the pantheon command still runs' $lv
+    # The relay this check started runs on Pantheon's own Node: stopped first, as a
+    # person closes agent windows (uninstall names what still holds it).
+    Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -match ' relay --port 8799' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+    Start-Sleep 2
     $u = (& cmd.exe /d /c "`"$L`" uninstall --yes" 2>&1) -join "`n"
     Write-Host "  --    pantheon uninstall --yes`n        $(($u -split "`n" | Select-Object -Last 12) -join "`n        ")"
     $gone = $false; for ($i = 0; $i -lt 60 -and -not $gone; $i++) { $gone = -not (Test-Path (Join-Path $curRoot 'runtime')); if (-not $gone) { Start-Sleep 1 } }
