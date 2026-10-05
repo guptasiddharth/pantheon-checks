@@ -1,0 +1,46 @@
+name: upgradefrom
+
+on:
+  workflow_dispatch:
+    inputs:
+      from:
+        description: "the older release the member installed with npm and joined with"
+        default: "0.31.0"
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  upgrade:
+    name: ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-2022, ubuntu-24.04, macos-15]
+    env:
+      PANTHEON_FROM: ${{ inputs.from }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: the member's pantheon (npm -g) and the latest for the relay
+        shell: bash
+        run: |
+          npm i -g "@join-pantheon/cli@$PANTHEON_FROM" --no-audit --no-fund
+          npm i --prefix "$RUNNER_TEMP/relay" @join-pantheon/cli@latest --no-audit --no-fund
+          if [ "$RUNNER_OS" = Windows ]; then echo "RELAY_BIN=$RUNNER_TEMP\\relay\\node_modules\\.bin\\pantheon.cmd" >> "$GITHUB_ENV"; else echo "RELAY_BIN=$RUNNER_TEMP/relay/node_modules/.bin/pantheon" >> "$GITHUB_ENV"; fi
+      - name: upgrade from ${{ inputs.from }}
+        run: node probes/upgradefrom.mjs
+        env:
+          ARTIFACTS: ${{ runner.temp }}/uf-artifacts
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: upgradefrom-${{ matrix.os }}
+          path: ${{ runner.temp }}/uf-artifacts
+          if-no-files-found: ignore
+          retention-days: 14
