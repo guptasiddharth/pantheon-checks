@@ -766,7 +766,7 @@ try {
 } catch { Write-Output ('threw ' + $_.Exception.Message) }`, { env: { ...process.env, PD_ID: id, PD_TAG: tag } });
     return { inHistory: /in-history [1-9]/.test(r.out), said: r.out.trim().split("\n").pop() };
   };
-  const toastsOn = await step("toasts switched on for this user (ToastEnabled=1, both app ids Enabled=1, no policy against them); Windows then reports them Enabled", () => {
+  const toastsOn = await step("toasts switched on for this user (ToastEnabled=1, both app ids Enabled=1, no policy against them), and Windows shows them: a harness toast under a third app id reaches its history", () => {
     const before = toastSettings();
     const r = ps(`[Console]::OutputEncoding = [Text.Encoding]::UTF8
 $said = New-Object System.Collections.Generic.List[string]
