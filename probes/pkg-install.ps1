@@ -29,7 +29,7 @@ Invoke-WebRequest "$rel/join-pantheon-cli-$newVersion.tgz" -OutFile "$W\pantheon
 Invoke-WebRequest "$rel/install-new.ps1" -OutFile "$W\install-new.ps1" -UseBasicParsing
 Invoke-WebRequest 'https://relay.joinpantheon.network/install.ps1' -OutFile "$W\install-old.ps1" -UseBasicParsing
 $oldVersion = ([regex]::Match((Get-Content -Raw "$W\install-old.ps1"), "PantheonVersion = '([^']+)'")).Groups[1].Value
-Write-Host "pkg-install $Scenario — $([Environment]::OSVersion.VersionString) $env:PROCESSOR_ARCHITECTURE; new $newVersion, old $oldVersion`n"
+Write-Host "pkg-install $Scenario - $([Environment]::OSVersion.VersionString) $env:PROCESSOR_ARCHITECTURE; new $newVersion, old $oldVersion`n"
 
 $pfn = New-ProbePackage $W
 Write-Host "  package: $pfn`n"
@@ -98,9 +98,16 @@ switch ($Scenario) {
   'tany' {
     Check (Install-Inside 'old') "the $oldVersion installer ran inside the package (as on the machine of 5 Oct)"
     Check ((-not (Test-Path (Join-Path $oldRoot 'runtime\node\node.exe'))) -and (Test-Path (Join-Path $priv 'Pantheon\runtime\node\node.exe'))) "$oldVersion is there only inside the app"
+    # As on that machine: the alerts had been set up (pantheon service install notifier), so a definition is there.
+    New-Item -ItemType Directory -Force (Join-Path $curRoot 'host') | Out-Null
+    Set-Content -Encoding UTF8 (Join-Path $curRoot 'host\notifier.json') (@{ kind = 'notifier'; cwd = $prof; args = @() } | ConvertTo-Json)
     Check (Install-Inside 'new') 'the new installer ran inside the package'
     $log = Get-Content -Raw "$W\inner-new.txt"
     Check ($log -match 'exists only inside PantheonProbe') 'it says the old install was only inside the app' ''
+    Check ($log -match "Pantheon's background notifier runs on this install") 'it started the background notifier that was set up, on the new install' ''
+    $state = Join-Path $curRoot 'host\state.json'
+    $up = $false; for ($i = 0; $i -lt 30 -and -not $up; $i++) { if (Test-Path $state) { try { $up = ([DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() - [double](Get-Content -Raw $state | ConvertFrom-Json).beat) -lt 30000 } catch { } }; if (-not $up) { Start-Sleep 1 } }
+    Check $up 'the background host is up without anyone running service install again' ''
     Check (Test-Path (Join-Path $curRoot 'runtime\node\node.exe')) "node.exe is in $curRoot for real"
     $v = & $cliVersion (Join-Path $curRoot 'bin\pantheon.cmd')
     Check ($v -eq $newVersion) "the launcher runs from outside: $v"
@@ -125,5 +132,7 @@ switch ($Scenario) {
 }
 
 $fails = @($results | Where-Object { -not $_[0] }).Count
-Write-Host "`n$(if ($fails) { "$fails FAILED" } else { 'nothing failed' }), $($results.Count - $fails) ok — $Scenario, $env:PROCESSOR_ARCHITECTURE"
+# A script that broke before its checks ran must not pass.
+if ($results.Count -lt 3) { Write-Host "only $($results.Count) checks ran - the script itself failed"; exit 99 }
+Write-Host "`n$(if ($fails) { "$fails FAILED" } else { 'nothing failed' }), $($results.Count - $fails) ok - $Scenario, $env:PROCESSOR_ARCHITECTURE"
 exit $fails
