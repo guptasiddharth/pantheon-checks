@@ -82,6 +82,18 @@ await step(`member on ${FROM} (npm -g) signs up and joins with defaults, from th
   return j.out.split("\n").filter((l) => /worker|alerts|notif|menu|tray|host/i.test(l)).slice(0, 12).join("\n");
 });
 note(`ps on ${FROM}`, m(["ps"]).out);
+// A worker that joined granted self-upgrade moves itself as soon as it sees the newer relay:
+// wait for that to settle (the binary can be missing while npm swaps it), and say what it left.
+{
+  const t0 = Date.now(); let last = "", stable = 0;
+  while (Date.now() - t0 < 240_000) {
+    const b = WIN ? which("pantheon.cmd") : "pantheon";
+    const v = b ? run(b, ["--version"], { env: menv, cwd: repo }).out.trim().split("\n").at(-1) : "(missing)";
+    if (v === last && !/missing|^$/.test(v)) { if (++stable >= 6) break; } else { stable = 0; last = v; console.log(`        ${Math.round((Date.now() - t0) / 1000)}s: ${v}`); }
+    await sleep(5000);
+  }
+  note(`after waiting ${Math.round((Date.now() - t0) / 1000)}s for any self-upgrade: ${last}`, m(["ps"], { bin: WIN ? which("pantheon.cmd") : "pantheon" }).out);
+}
 note(`policy on ${FROM}`, m(["policy"]).out);
 
 let upOut = "";
@@ -106,6 +118,8 @@ note("doctor after (alerts/worker/version lines)", doc.split("\n").filter((l) =>
 await step("worker is running after", () => { const p = m(["ps"], { bin: bin2 }).out; if (!/worker\s+running/.test(p)) throw new Error(p); });
 await step("alerts (notifier) are running after", () => { const p = m(["ps"], { bin: bin2 }).out; if (!/notifier\s+running/.test(p)) throw new Error(p); });
 
+try { const L = join(home, ".pantheon", "logs"); for (const f of (await import("node:fs")).readdirSync(L)) writeFileSync(join(ART, `log-${f}`), readFileSync(join(L, f))); } catch {}
+if (!WIN && !LINUX) note("launchctl", run("sh", ["-c", "launchctl list | grep -i pantheon; for f in ~/Library/LaunchAgents/dev.pantheon.*.plist; do echo == $f; plutil -extract KeepAlive json -o - $f 2>&1; done"]).out);
 const fails = results.filter((r) => r[0] === "FAIL").length;
 console.log(`\n${fails ? `${fails} FAILED` : "nothing failed"}, ${results.length - fails} ok — ${platform()} ${process.arch}, from ${FROM}`);
 process.exitCode = fails ? 1 : 0;
