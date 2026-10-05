@@ -146,7 +146,7 @@ switch ($Scenario) {
     Check (Install-Inside 'new') 'the new installer ran again inside the package'
     $re = Get-Content -Raw "$W\inner-new.txt"
     Check ($re -match 'still signed in as') 'it says you are still signed in, nothing to rejoin' ''
-    Check ($re -match 'Your coding agents now use this install') 'it pointed the coding agents at the install' ''
+    Check ($re -match 'Your coding agents (now|already) use this install') 'it says where the coding agents stand (none were set up here)' ''
   }
   'outside' {
     # Not inside an app: AppData, exactly as 0.33.0 put it (AppData\Local never roams).
