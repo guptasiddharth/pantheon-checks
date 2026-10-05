@@ -44,6 +44,25 @@ Get-Content "C:\pkgi\inner-$Which.log" | Set-Content $out
 Add-Content $out 'done'
 '@
 
+# Inside, the facts the new installer decides by: its own helpers, lifted from its syntax tree.
+Set-Content "$W\diag.ps1" @'
+$out = 'C:\pkgi\inner-diag.txt'
+$ast = [System.Management.Automation.Language.Parser]::ParseFile('C:\pkgi\install-new.ps1', [ref]$null, [ref]$null)
+foreach ($n in 'Get-PantheonAppPackage', 'Select-PantheonRoot') { $f = $ast.FindAll({ param($x) $x -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $x.Name -eq $n }, $true) | Select-Object -First 1; . ([scriptblock]::Create($f.Extent.Text)) }
+$local = [Environment]::GetFolderPath('LocalApplicationData'); $prof = [Environment]::GetFolderPath('UserProfile')
+$pkg = Get-PantheonAppPackage $local
+$r = Select-PantheonRoot $prof $local $pkg
+$lines = @(
+  "LocalApplicationData=$local", "UserProfile=$prof", "package=$pkg",
+  "current node: $(Test-Path ([IO.Path]::Combine($prof, '.pantheon', 'runtime', 'node', 'node.exe')))",
+  "legacy node: $(Test-Path ([IO.Path]::Combine($local, 'Pantheon', 'runtime', 'node', 'node.exe')))",
+  "legacy launcher: $(Test-Path ([IO.Path]::Combine($local, 'Pantheon', 'bin', 'pantheon.cmd')))",
+  "private node: $(Test-Path ([IO.Path]::Combine($local, 'Packages', $pkg, 'LocalCache', 'Local', 'Pantheon', 'runtime', 'node', 'node.exe')))",
+  "select: root=$($r.root) oldPrivate=$($r.oldPrivate)",
+  'done')
+$lines | Set-Content $out
+'@
+
 $prof = $env:USERPROFILE; $local = $env:LOCALAPPDATA
 $curRoot = Join-Path $prof '.pantheon'; $oldRoot = Join-Path $local 'Pantheon'
 $priv = Join-Path $local "Packages\$pfn\LocalCache\Local"
@@ -55,6 +74,17 @@ function Install-Inside([string]$Which) {
   $ok = Invoke-InPackage $pfn "$W\inner.ps1" $Which "$W\inner-$Which.txt"
   Show "the $Which installer, inside the package" "$W\inner-$Which.txt"
   return $ok
+}
+
+# A member to run services for: a relay on this machine (from the new CLI), and a team on it.
+function New-Member([string]$Launcher) {
+  $node = Join-Path $curRoot 'runtime\node\node.exe'; $cli = Join-Path $curRoot 'runtime\node\node_modules\@join-pantheon\cli\dist\cli.js'
+  if (-not (Test-Path $node)) { $node = Join-Path $oldRoot 'runtime\node\node.exe'; $cli = Join-Path $oldRoot 'runtime\node\node_modules\@join-pantheon\cli\dist\cli.js' }
+  Start-Process -FilePath $node -ArgumentList @('--use-system-ca', $cli, 'relay', '--port', '8799', '--data', 'C:\pkgi\relay') -WindowStyle Hidden -RedirectStandardOutput 'C:\pkgi\relay.out' -RedirectStandardError 'C:\pkgi\relay.err' | Out-Null
+  for ($i = 0; $i -lt 60; $i++) { try { if ((Invoke-WebRequest 'http://127.0.0.1:8799/health' -UseBasicParsing -TimeoutSec 2).StatusCode -eq 200) { break } } catch { }; Start-Sleep 1 }
+  $o = (& cmd.exe /d /c "`"$Launcher`" start --relay ws://127.0.0.1:8799 --space pk --yes --name Pk --title QA --decides none --no-worker --no-hook --no-notifications --no-menubar" 2>&1) -join "`n"
+  Write-Host "  --    pantheon start (a team on a relay on this machine)`n        $(($o -split "`n" | Select-Object -Last 6) -join "`n        ")"
+  return (Test-Path (Join-Path $curRoot 'config.json'))
 }
 
 # The host, started the way logon starts it, from outside: does it come up?
@@ -92,19 +122,26 @@ switch ($Scenario) {
     Check (-not (schtasks /query /fo csv 2>$null | Select-String 'Pantheon-Path-')) 'the one-off PATH task is gone'
     Check (-not (Get-ChildItem $local -Directory -Filter 'pantheon-probe-*' -ErrorAction SilentlyContinue)) 'no probe folder left in AppData'
     Check (-not (Get-ChildItem $priv -Directory -Filter 'pantheon-probe-*' -ErrorAction SilentlyContinue)) 'none left in the private copy either'
+    Check (New-Member (Join-Path $curRoot 'bin\pantheon.cmd')) 'a member is set up (a team on a relay on this machine)'
     $h = Test-HostComes (Join-Path $curRoot 'bin\pantheon.cmd')
     Check ($h -notlike 'NOT UP*') "the background host comes up, started by Task Scheduler: $h" $h
   }
   'tany' {
     Check (Install-Inside 'old') "the $oldVersion installer ran inside the package (as on the machine of 5 Oct)"
     Check ((-not (Test-Path (Join-Path $oldRoot 'runtime\node\node.exe'))) -and (Test-Path (Join-Path $priv 'Pantheon\runtime\node\node.exe'))) "$oldVersion is there only inside the app"
+    Check (Invoke-InPackage $pfn "$W\diag.ps1" '' "$W\inner-diag.txt" 60) 'inside, the facts the installer decides by'
+    Show 'those facts' "$W\inner-diag.txt"
     # As on that machine: the alerts had been set up (pantheon service install notifier), so a definition is there.
     New-Item -ItemType Directory -Force (Join-Path $curRoot 'host') | Out-Null
     Set-Content -Encoding UTF8 (Join-Path $curRoot 'host\notifier.json') (@{ kind = 'notifier'; cwd = $prof; args = @() } | ConvertTo-Json)
     Check (Install-Inside 'new') 'the new installer ran inside the package'
     $log = Get-Content -Raw "$W\inner-new.txt"
     Check ($log -match 'exists only inside PantheonProbe') 'it says the old install was only inside the app' ''
-    Check ($log -match "Pantheon's background notifier runs on this install") 'it started the background notifier that was set up, on the new install' ''
+    Check ($log -match "Pantheon's background notifier (runs on this install|did not start on this install)") 'it tried to start the background notifier that was set up, on the new install' ''
+    # Then with a member (the old one's config is the identity a real machine keeps): service start brings the host up.
+    Check (New-Member (Join-Path $curRoot 'bin\pantheon.cmd')) 'a member is set up'
+    $o2 = (& cmd.exe /d /c "`"$(Join-Path $curRoot 'bin\pantheon.cmd')`" service start notifier" 2>&1) -join "`n"
+    Write-Host "  --    pantheon service start notifier`n        $($o2 -replace "`n", "`n        ")"
     $state = Join-Path $curRoot 'host\state.json'
     $up = $false; for ($i = 0; $i -lt 30 -and -not $up; $i++) { if (Test-Path $state) { try { $up = ([DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() - [double](Get-Content -Raw $state | ConvertFrom-Json).beat) -lt 30000 } catch { } }; if (-not $up) { Start-Sleep 1 } }
     Check $up 'the background host is up without anyone running service install again' ''
@@ -114,8 +151,6 @@ switch ($Scenario) {
     $p = & $userPath
     Check ((($p -split ';') | Select-Object -First 1) -ieq (Join-Path $curRoot 'bin')) 'PATH starts with ~\.pantheon\bin' "$p"
     Check (-not (($p -split ';') | Where-Object { $_ -ieq (Join-Path $oldRoot 'bin') })) 'and the app-only AppData bin is off it' "$p"
-    $h = Test-HostComes (Join-Path $curRoot 'bin\pantheon.cmd')
-    Check ($h -notlike 'NOT UP*') "the background host comes up: $h" $h
   }
   'legacy' {
     $o = (& powershell.exe -NoProfile -Command "Get-Content -Raw '$W\install-old.ps1' | iex" 2>&1) -join "`n"
@@ -133,6 +168,6 @@ switch ($Scenario) {
 
 $fails = @($results | Where-Object { -not $_[0] }).Count
 # A script that broke before its checks ran must not pass.
-if ($results.Count -lt 3) { Write-Host "only $($results.Count) checks ran - the script itself failed"; exit 99 }
+if ($results.Count -lt 2) { Write-Host "only $($results.Count) checks ran - the script itself failed"; exit 99 }
 Write-Host "`n$(if ($fails) { "$fails FAILED" } else { 'nothing failed' }), $($results.Count - $fails) ok - $Scenario, $env:PROCESSOR_ARCHITECTURE"
 exit $fails

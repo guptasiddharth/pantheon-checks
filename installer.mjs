@@ -18,7 +18,7 @@ import { pathToFileURL } from "node:url";
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
-import { delimiter, join } from "node:path";
+import { delimiter, dirname, join } from "node:path";
 import { platform, tmpdir } from "node:os";
 
 const WIN = platform() === "win32";
@@ -104,7 +104,12 @@ const jenv = { ...process.env, HOME: jhome, USERPROFILE: jhome, PANTHEON_HOME: j
 if (WIN) jenv.Path = jenv.PATH;
 for (const k of ["PANTHEON_RELAY", "PANTHEON_SPACE", "PANTHEON_TOKEN", "PANTHEON_MEMBER", "PANTHEON_AGENT", "PANTHEON_PUBKEY", "PANTHEON_PRIVKEY", "npm_config_prefix", "NPM_CONFIG_PREFIX"]) delete jenv[k];
 const localAppData = WIN ? spawnSync("powershell", ["-NoProfile", "-Command", "[Environment]::GetFolderPath('LocalApplicationData')"], { encoding: "utf8" }).stdout.trim() : "";
-const launcher = WIN ? join(localAppData, "Pantheon", "bin", "pantheon.cmd") : join(jhome, ".pantheon", "bin", "pantheon");
+// Windows: ~\.pantheon since 0.33.1 (every program sees it, Task Scheduler included,
+// even when the installer runs inside an app package); %LOCALAPPDATA%\Pantheon before.
+const winLauncher = (home) => [join(home, ".pantheon", "bin", "pantheon.cmd"), join(localAppData, "Pantheon", "bin", "pantheon.cmd")].find((p) => existsSync(p)) ?? join(home, ".pantheon", "bin", "pantheon.cmd");
+let launcher = WIN ? winLauncher(jhome) : join(jhome, ".pantheon", "bin", "pantheon");
+/** After an install: where the installer actually put the launcher. */
+const findLauncher = () => { if (WIN) launcher = winLauncher(jhome); return launcher; };
 
 /** The one line, exactly as a person pastes it, with these arguments for pantheon. */
 function installLine(args, shell = WIN ? "powershell" : "sh") {
@@ -145,7 +150,7 @@ await step("this person has no node, npm or pantheon on PATH", () => {
 await step("the one line installs Pantheon and signs them up (no Node beforehand)", async () => {
   const r = install(["signup", "--email", "joiner@example.com", "--username", "joiner", "--relay", relayUrl]);
   if (r.code !== 0) throw new Error(`exit ${r.code}${r.error ? ` (${r.error.message})` : ""}:\n${r.out.slice(-1200)}`);
-  if (!existsSync(launcher)) throw new Error(`no launcher at ${launcher}:\n${r.out.slice(-600)}`);
+  if (!existsSync(findLauncher())) throw new Error(`no launcher at ${launcher}:\n${r.out.slice(-600)}`);
   const v = joiner(["verify", await codeFor("joiner@example.com")]);
   if (v.code !== 0) throw new Error(v.out.slice(-400));
   return /Downloading Node/.test(r.out) ? "Node downloaded and checked" : "";
@@ -245,12 +250,19 @@ await step("pantheon uninstall removes what the installer added, and nothing els
   // runtime (an MCP server an earlier step started) is stopped and named.
   let closed = "";
   if (WIN) {
-    const ps = spawnSync("powershell", ["-NoProfile", "-Command", `Get-Process | Where-Object { $_.Path -and $_.Path.StartsWith('${join(localAppData, "Pantheon", "runtime")}', 'OrdinalIgnoreCase') } | ForEach-Object { "$($_.Id) $($_.Path)"; Stop-Process -Id $_.Id -Force }`], { encoding: "utf8" });
+    const ps = spawnSync("powershell", ["-NoProfile", "-Command", `Get-Process | Where-Object { $_.Path -and $_.Path.StartsWith('${join(dirname(dirname(findLauncher())), "runtime")}', 'OrdinalIgnoreCase') } | ForEach-Object { "$($_.Id) $($_.Path)"; Stop-Process -Id $_.Id -Force }`], { encoding: "utf8" });
     closed = (ps.stdout ?? "").trim();
   }
+  const runtime = WIN ? join(dirname(dirname(findLauncher())), "runtime") : join(jhome, ".pantheon", "runtime");
   const r = joiner(["uninstall", "--yes"]);
   if (r.code !== 0) throw new Error(r.out.slice(-500));
-  const runtime = WIN ? join(localAppData, "Pantheon", "runtime") : join(jhome, ".pantheon", "runtime");
+  // Since 0.33.1 the identity stays (a reinstall is back in its teams): said, and only it is left of Pantheon's home.
+  if (/kept, so installing Pantheon again puts you back/.test(r.out)) {
+    const ph = jenv.PANTHEON_HOME;
+    const leftThere = existsSync(ph) ? readdirSync(ph).filter((n) => !/^(config\.json(\.bak|\.lock)?|keys\.json|profile\.json|worker-policy\.json|spend\.json|continued\.json|cursors\.json|nonces\.json|worker-cursor\.json|personas|\.pantheon-home)$/.test(n)) : [];
+    if (!existsSync(join(ph, "config.json"))) throw new Error(`uninstall said it kept the identity, but ${ph}\\config.json is gone`);
+    if (leftThere.length && !(WIN && leftThere.every((n) => ["runtime", "bin"].includes(n)))) throw new Error(`besides the identity, ${ph} still has: ${leftThere.join(", ")}`);
+  }
   // Windows: the runtime is locked while uninstall runs from it, and goes a few seconds after it exits.
   for (let i = 0; i < (WIN ? 60 : 1) && existsSync(runtime); i++) await new Promise((res) => setTimeout(res, 500));
   if (existsSync(runtime)) {
@@ -343,7 +355,7 @@ if (prev && want && !["latest", "next"].includes(want)) {
   });
 
   await step("an upgrade cut off between its two renames: the pantheon command puts the CLI back and runs", async () => {
-    const ulauncher = WIN ? join(localAppData, "Pantheon", "bin", "pantheon.cmd") : join(uhome, ".pantheon", "bin", "pantheon");
+    const ulauncher = WIN ? winLauncher(uhome) : join(uhome, ".pantheon", "bin", "pantheon");
     const prevDir = join(rt, "cli.prev");
     rmSync(prevDir, { recursive: true, force: true });
     renameSync(pkg, prevDir);

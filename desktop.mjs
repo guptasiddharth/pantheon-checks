@@ -40,7 +40,7 @@ import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, 
 import { connect, createServer } from "node:net";
 import { request } from "node:http";
 import { networkInterfaces, platform, tmpdir, userInfo } from "node:os";
-import { basename, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 
 const OS = platform();
 const WIN = OS === "win32", MAC = OS === "darwin", LINUX = OS === "linux";
@@ -262,7 +262,9 @@ const relayUp = await step("a relay from that package runs on this machine", asy
 let managed = null;
 if (WIN) {
   const localAppData = process.env.LOCALAPPDATA ?? join(realHome, "AppData", "Local");
-  const launcher = join(localAppData, "Pantheon", "bin", "pantheon.cmd");
+  // ~\.pantheon since 0.33.1; %LOCALAPPDATA%\Pantheon for the installers before it.
+  const launchers = [join(realHome, ".pantheon", "bin", "pantheon.cmd"), join(localAppData, "Pantheon", "bin", "pantheon.cmd")];
+  let launcher = launchers[0];
   await step("the one line from the relay installs Pantheon for this Windows user (its own Node, a launcher)", async () => {
     let r0;
     for (let i = 0; i < 40; i++) { r0 = await fetch(`${httpBase}/install.ps1`).catch(() => null); if (r0?.status === 200) break; await sleep(3000); }
@@ -271,9 +273,10 @@ if (WIN) {
     const r = spawnSync("powershell.exe", ["-NoProfile", "-Command", `irm ${httpBase}/install.ps1 | iex`], { encoding: "utf8", env: { ...member.env, PANTHEON_ARGS: "--version" }, timeout: 600_000, windowsHide: true });
     const out = strip(`${r.stdout ?? ""}${r.stderr ?? ""}`);
     writeFileSync(join(ART, "install.ps1.out.txt"), out);
+    launcher = launchers.find((p) => existsSync(p)) ?? launchers[0];
     if (r.status !== 0 || !existsSync(launcher)) throw new Error(`exit ${r.status}; launcher ${existsSync(launcher) ? "present" : "missing"} — the member uses npm's pantheon instead\n${tail(out, 15)}`);
     member.bin = launcher;
-    managed = { launcher, runtime: join(localAppData, "Pantheon", "runtime") };
+    managed = { launcher, runtime: join(dirname(dirname(launcher)), "runtime") };
     const v = /\d+\.\d+\.\d+(-[\w.]+)?/.exec(out.split("\n").slice(-3).join(" "))?.[0];
     return `${launcher}${v ? ` (${v})` : ""}`;
   }, relayUp ? null : "no relay");
@@ -686,7 +689,7 @@ ConvertTo-Json -InputObject $o -Compress`);
     const f = ps(`[Console]::OutputEncoding = [Text.Encoding]::UTF8
 $o = [ordered]@{}
 $o.launchers = @(Get-ChildItem -LiteralPath (Join-Path $env:PD_PH 'bin') -Filter 'pantheon-host-*.exe' -File -ErrorAction SilentlyContinue | ForEach-Object { $_.FullName })
-$roots = @((Join-Path $env:LOCALAPPDATA 'Pantheon'), $env:PD_PH, $env:PD_NPM) | Where-Object { $_ -and (Test-Path -LiteralPath $_) }
+$roots = @((Join-Path $env:LOCALAPPDATA 'Pantheon'), (Join-Path $env:USERPROFILE '.pantheon'), $env:PD_PH, $env:PD_NPM) | Where-Object { $_ -and (Test-Path -LiteralPath $_) }
 $o.scripts = @(foreach ($r in $roots) { foreach ($n in 'pantheon-tray.ps1', 'pantheon-notice.ps1') { Get-ChildItem -LiteralPath $r -Recurse -File -Filter $n -ErrorAction SilentlyContinue | ForEach-Object { $_.FullName } } }) | Select-Object -Unique
 $o.packages = @($o.scripts | ForEach-Object { Split-Path (Split-Path (Split-Path $_ -Parent) -Parent) -Parent }) | Select-Object -Unique
 $o.programs = @(Get-CimInstance Win32_Process | Where-Object { ($_.CommandLine -match 'pantheon') -and $_.ExecutablePath -and ($_.ExecutablePath -notmatch '\\\\Windows\\\\') } | ForEach-Object { $_.ExecutablePath }) | Select-Object -Unique
@@ -1016,7 +1019,7 @@ ConvertTo-Json -InputObject @($o) -Compress -Depth 4`);
     return tail(r.out, 4).split("\n").map((l) => l.trim()).join(" | ").slice(0, 200);
   }, noTask);
 
-  await step("pantheon uninstall --yes: no task, no processes, no ~/.pantheon, no pantheon: handler", async () => {
+  await step("pantheon uninstall --yes: no task, no processes, nothing of Pantheon's but the identity it keeps (0.33.1 on), no pantheon: handler", async () => {
     const r = member.run(["uninstall", "--yes"], { timeout: 300_000 });
     writeFileSync(join(ART, "uninstall.txt"), r.out);
     if (r.code !== 0) throw new Error(`exit ${r.code}: ${tail(r.out, 15)}`);
@@ -1025,8 +1028,13 @@ ConvertTo-Json -InputObject @($o) -Compress -Depth 4`);
     if (!noTaskNow) left.push(`the ${task} task`);
     const noProcs = await waitFor(() => !procs().length, 30_000, 1500);
     if (!noProcs) left.push(`processes: ${showProcs(procs())}`);
-    const homeGone = await waitFor(() => !existsSync(member.ph), 60_000, 1000);
-    if (!homeGone) left.push(`${member.ph}: ${readdirSync(member.ph).join(", ")}`);
+    // Since 0.33.1 the identity stays so a reinstall is back in its teams; everything else goes.
+    const keeps = /kept, so installing Pantheon again puts you back/.test(r.out);
+    const ID = /^(config\.json(\.bak|\.lock)?|keys\.json|profile\.json|worker-policy\.json|spend\.json|continued\.json|cursors\.json|nonces\.json|worker-cursor\.json|personas|\.pantheon-home)$/;
+    const others = () => (existsSync(member.ph) ? readdirSync(member.ph).filter((n) => !keeps || !ID.test(n)) : []);
+    const homeGone = await waitFor(() => !others().length, 60_000, 1000);
+    if (!homeGone) left.push(`${member.ph}: ${others().join(", ")}`);
+    if (keeps && !existsSync(join(member.ph, "config.json"))) left.push("(the identity it said it kept is gone)");
     if (spawnSync("reg", ["query", "HKCU\\Software\\Classes\\pantheon"], { windowsHide: true }).status === 0) left.push("HKCU\\Software\\Classes\\pantheon");
     const aumid = spawnSync("reg", ["query", "HKCU\\Software\\Classes\\AppUserModelId\\JoinPantheon.Pantheon"], { windowsHide: true }).status === 0;
     if (managed && !(await waitFor(() => !existsSync(managed.runtime), 60_000, 1000))) left.push(managed.runtime);
