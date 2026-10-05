@@ -174,11 +174,21 @@ switch ($Scenario) {
     Check (Test-Path (Join-Path $curRoot 'config.json')) 'the identity is set up' (($o -split "`n" | Select-Object -Last 4) -join ' | ')
     New-Item -ItemType Directory -Force (Join-Path $curRoot 'host') | Out-Null
     [IO.File]::WriteAllText((Join-Path $curRoot 'host\notifier.json'), (@{ kind = 'notifier'; cwd = $prof; args = @() } | ConvertTo-Json -Compress))
+    # And its Claude Code hooks, as join wrote them: user scope, naming the app-only Node.
+    [IO.File]::WriteAllText((Join-Path $curRoot 'hook-intent.json'), '{"scope":"user","agents":["claude-code"]}')
+    New-Item -ItemType Directory -Force (Join-Path $prof '.claude') | Out-Null
+    $oldHook = '\"' + ($oldRoot -replace '\\', '/') + '/runtime/node/node.exe\" --use-system-ca \"' + ($oldRoot -replace '\\', '/') + '/runtime/node/node_modules/@join-pantheon/cli/dist/cli.js\"'
+    $evs = @{ Stop = 'stop'; UserPromptSubmit = 'prompt'; SessionEnd = 'end' }
+    $hooksJson = '{"hooks":{' + (($evs.Keys | ForEach-Object { '"' + $_ + '":[{"hooks":[{"type":"command","command":"' + $oldHook + ' hook ' + $evs[$_] + '","timeout":10}]}]' }) -join ',') + '},"mine":"kept"}'
+    [IO.File]::WriteAllText((Join-Path $prof '.claude\settings.json'), $hooksJson)
     Check (Install-Inside 'new') 'the new installer ran inside the package'
     $log = Get-Content -Raw "$W\inner-new.txt"
     Check ($log -match 'exists only inside\s+PantheonProbe') 'it says the old install was only inside the app' ''
     Check ($log -match "Pantheon's background notifier runs on this install") 'it started the background notifier that was set up, on the new install' ''
     Check ($log -match 'Your coding agents now use this install') 'it pointed the coding agents at the new install (they named the app-only one)' ''
+    $hk = Get-Content -Raw (Join-Path $prof '.claude\settings.json')
+    Check (($hk -match [regex]::Escape(($curRoot -replace '\\', '/') + '/runtime/node/node.exe')) -and ($hk -notmatch 'AppData/Local/Pantheon')) "Claude Code's hooks now run the Node in $curRoot, not the app-only one" ($hk.Substring(0, [Math]::Min(300, $hk.Length)))
+    Check ($hk -match '"mine":\s*"kept"') 'the rest of that settings file is as it was' ''
     Check ($log -match 'still signed in as') 'it says you are still signed in, nothing to rejoin' ''
     $state = Join-Path $curRoot 'host\state.json'
     $up = $false; for ($i = 0; $i -lt 30 -and -not $up; $i++) { if (Test-Path $state) { try { $up = ([DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() - [double](Get-Content -Raw $state | ConvertFrom-Json).beat) -lt 30000 } catch { } }; if (-not $up) { Start-Sleep 1 } }
