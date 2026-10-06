@@ -27,7 +27,12 @@ $rel = if ($env:PANTHEON_TEST_RELEASE) { $env:PANTHEON_TEST_RELEASE } else { 'ht
 Invoke-WebRequest "$rel/install-new.ps1" -OutFile "$W\install-new.ps1" -UseBasicParsing
 $newVersion = ([regex]::Match((Get-Content -Raw "$W\install-new.ps1"), "PantheonVersion = '([^']+)'")).Groups[1].Value
 Invoke-WebRequest "$rel/join-pantheon-cli-$newVersion.tgz" -OutFile "$W\pantheon.tgz" -UseBasicParsing
-Invoke-WebRequest 'https://relay.joinpantheon.network/install.ps1' -OutFile "$W\install-old.ps1" -UseBasicParsing
+# The "old" installer is the one the failure was seen with (0.33.0). A release
+# carries it as install-old.ps1; without one, the relay's (right only while the
+# relay still served 0.33.0).
+try { Invoke-WebRequest "$rel/install-old.ps1" -OutFile "$W\install-old.ps1" -UseBasicParsing }
+catch { Invoke-WebRequest 'https://relay.joinpantheon.network/install.ps1' -OutFile "$W\install-old.ps1" -UseBasicParsing }
+if ($newVersion -like '*__*' -or -not $newVersion) { Write-Host "FAIL  install-new.ps1 has no version filled in ($newVersion)"; exit 99 }
 $oldVersion = ([regex]::Match((Get-Content -Raw "$W\install-old.ps1"), "PantheonVersion = '([^']+)'")).Groups[1].Value
 Write-Host "pkg-install $Scenario - $([Environment]::OSVersion.VersionString) $env:PROCESSOR_ARCHITECTURE; new $newVersion, old $oldVersion`n"
 
