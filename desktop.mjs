@@ -603,8 +603,16 @@ ConvertTo-Json -InputObject @{ main = $main; visible = @($vis); conhost = $con }
   await step(`pantheon doctor: its task and host rows ok, no FAIL among the background rows${via}`, () => {
     const r = member.run(["doctor"], { timeout: 120_000 });
     writeFileSync(join(ART, "doctor.txt"), r.out);
-    const rows = r.out.split("\n").filter((l) => /^\s*(ok|warn|FAIL)\s+(task|host|worker|alerts|tray)\b/.test(l)).map((l) => l.trim().replace(/\s+/g, " "));
-    const otherFails = r.out.split("\n").filter((l) => /\bFAIL\b/.test(l) && !rows.includes(l.trim().replace(/\s+/g, " ")));
+    // "worker agent" is about the agent CLI, not a background process. These runners have no
+    // agent CLI, so from 0.33.9 doctor rightly FAILs that row — and must then give the install
+    // steps for this platform (the same ones the signed-out/no-agent alert points to).
+    const agentRow = r.out.split("\n").find((l) => /^\s*(ok|warn|FAIL)\s+worker agent\b/.test(l));
+    if (agentRow && /^\s*FAIL/.test(agentRow)) {
+      const steps = process.platform === "win32" ? /claude\.ai\/install\.ps1/ : /claude\.ai\/install\.sh/;
+      if (!steps.test(r.out)) throw new Error(`worker agent FAILs but doctor gives no install steps:\n${tail(r.out, 25)}`);
+    }
+    const rows = r.out.split("\n").filter((l) => /^\s*(ok|warn|FAIL)\s+(task|host|worker|alerts|tray)\b/.test(l) && !/^\s*(ok|warn|FAIL)\s+worker agent\b/.test(l)).map((l) => l.trim().replace(/\s+/g, " "));
+    const otherFails = r.out.split("\n").filter((l) => /\bFAIL\b/.test(l) && l !== agentRow && !rows.includes(l.trim().replace(/\s+/g, " ")));
     if (rows.some((l) => /^FAIL/.test(l))) throw new Error(rows.join("\n"));
     if (!rows.some((l) => /^ok task/.test(l)) || !rows.some((l) => /^ok host/.test(l))) throw new Error(`task/host rows: ${rows.join(" | ") || "none"}\n${tail(r.out, 25)}`);
     return `${rows.join(" | ").slice(0, 400)}${otherFails.length ? `; elsewhere: ${otherFails.map((l) => l.trim()).join(" | ").slice(0, 200)}` : ""}`;
