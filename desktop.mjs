@@ -1361,7 +1361,9 @@ async function dunstChecks() {
     act = await askForDecision(`Ship the ${LITERAL} banner today`, "release-banner");
     const n = await waitFor(() => { const c = ctl(["count", "displayed"]); return c.code === 0 && Number(c.out.trim()) >= 1 ? c.out.trim() : null; }, 90_000, 500);
     if (!n) throw new Error(`dunstctl count displayed is ${ctl(["count", "displayed"]).out.trim()} 90 s after ${act}\nnotifier:\n${tail(strip(nOut), 8)}\ndunst:\n${tail(strip(dOut), 20)}`);
-    // The notifier says which server it found, and whether it offers buttons, when it first shows an alert.
+    // The notifier says which server it found, and whether it offers buttons, when it first shows an alert —
+    // a moment after dunst has it on screen: waited for, not read at once (0.34.1-rc.1 lost that race once on arm64).
+    await waitFor(() => /alerts: D-Bus notifications/.test(strip(nOut)), 15_000, 200);
     const said = strip(/alerts: D-Bus notifications[^\n]*/.exec(strip(nOut))?.[0] ?? "");
     if (!/with actions/.test(said) || !/dunst/i.test(said)) throw new Error(`notifier: ${said || tail(strip(nOut), 6)}`);
     return `${n} displayed; act ${act}; notifier: ${said.trim()}`;
