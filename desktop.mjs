@@ -433,8 +433,10 @@ async function windows() {
     if (/^powershell/i.test(name) && /launch\.txt/i.test(cmd)) return "launcher";
     if (!/^node/i.test(name)) return null;
     if (/cli\.js"?\s+host(\s|$)/i.test(cmd)) return "host";
-    if (/cli\.js"?\s+worker(\s|$)/i.test(cmd)) return "worker";
-    if (/cli\.js"?\s+notifier(\s|$)/i.test(cmd)) return "notifier";
+    // Since 0.38.2 the host starts the worker and the alerts through the stable entry, bin\pantheon.js
+    // (where an upgrade's probation is watched); before, through dist\cli.js. Both are these services.
+    if (/(?:cli\.js|[\\/]bin[\\/]pantheon\.js)"?\s+worker(\s|$)/i.test(cmd)) return "worker";
+    if (/(?:cli\.js|[\\/]bin[\\/]pantheon\.js)"?\s+notifier(\s|$)/i.test(cmd)) return "notifier";
     if (/cli\.js"?\s+board\s+--serve/i.test(cmd)) return "board";
     return null;
   };
