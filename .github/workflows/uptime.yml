@@ -4,7 +4,8 @@ name: uptime
 # One alert per outage, not one per run: when the relay is down an issue labelled
 # relay-down is opened (GitHub tells the repo's owner by email and on the mobile app);
 # while it stays down nothing more is sent; when it is back the issue is closed with
-# the time. GitHub may start a scheduled run some minutes late.
+# the time. GitHub may start a scheduled run some minutes late, and may take a while to
+# begin running a schedule it has just been given.
 #
 # Note: GitHub stops scheduled workflows in a public repository after 60 days with no
 # commit to it. The release checks commit here rarely, so look at the Actions tab when
