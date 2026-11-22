@@ -26,7 +26,7 @@ async function health() {
     let j = null;
     try { j = JSON.parse(body); } catch { /* not JSON */ }
     if (r.status !== 200 || j?.ok !== true) {
-      const why = j?.storage ? `storage: ${j.storage.error}` : j?.disk?.low ? `disk nearly full (${j.disk.free_mb} MB free)` : body.slice(0, 120);
+      const why = j?.storage ? `storage: ${j.storage.error}` : j?.disk?.low ? "the relay's disk is nearly full" : body.slice(0, 120);
       return `/health answered ${r.status}: ${why}`;
     }
     return null;
