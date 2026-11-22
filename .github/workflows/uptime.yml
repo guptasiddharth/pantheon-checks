@@ -1,0 +1,51 @@
+name: uptime
+
+# Watches the hosted relay from outside, every 5 minutes, while every laptop sleeps.
+# One alert per outage, not one per run: when the relay is down an issue labelled
+# relay-down is opened (GitHub tells the repo's owner by email and on the mobile app);
+# while it stays down nothing more is sent; when it is back the issue is closed with
+# the time. GitHub may start a scheduled run some minutes late.
+#
+# Note: GitHub stops scheduled workflows in a public repository after 60 days with no
+# commit to it. The release checks commit here rarely, so look at the Actions tab when
+# a release goes out, and re-enable it there if GitHub has turned it off.
+
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: uptime
+  cancel-in-progress: false
+
+jobs:
+  relay:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - id: probe
+        run: node uptime.mjs
+      - name: open or close the outage issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          STATE: ${{ steps.probe.outputs.state }}
+        run: |
+          gh label create relay-down --color B60205 --description "the hosted relay is not answering" 2>/dev/null || true
+          open=$(gh issue list --label relay-down --state open --json number --jq '.[0].number // empty')
+          now=$(date -u +"%Y-%m-%d %H:%M UTC")
+          if [ "${STATE}" = "up" ]; then
+            if [ -n "$open" ]; then gh issue close "$open" --comment "Back up at ${now}."; fi
+          elif [ -z "$open" ]; then
+            gh issue create --label relay-down --title "Relay down since ${now}" --body "${STATE}
+
+          Checked from GitHub's machines (three tries, about 40 s apart). This issue closes itself when the relay answers again."
+          fi
