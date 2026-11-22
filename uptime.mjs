@@ -8,10 +8,11 @@
 //   2. A WebSocket opens and the relay sends its "challenge" within 10 s: the path
 //      every client's handshake takes, which /health alone does not exercise.
 //
-// Prints one line, and writes "up" or "down: <why>" to $GITHUB_OUTPUT as `state`.
+// Prints one line, and writes "up" or "down: <why>" to $GITHUB_OUTPUT as `state` and to
+// $STATE_FILE when set.
 // Sends nothing but these two requests, with User-Agent pantheon-check so they are
 // never counted as installs.
-import { appendFileSync } from "node:fs";
+import { appendFileSync, writeFileSync } from "node:fs";
 
 const RELAY = process.env.RELAY_URL || "https://relay.joinpantheon.network";
 const UA = "pantheon-check uptime";
@@ -60,3 +61,4 @@ for (let i = 0; i < 3; i++) {
 const state = why ? `down: ${why}` : "up";
 console.log(`${RELAY}: ${state}`);
 if (process.env.GITHUB_OUTPUT) appendFileSync(process.env.GITHUB_OUTPUT, `state=${state.replace(/\n/g, " ")}\n`);
+if (process.env.STATE_FILE) writeFileSync(process.env.STATE_FILE, state.replace(/\n/g, " "));
